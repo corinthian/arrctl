@@ -1,0 +1,8 @@
+# Build / release output
+/dist/
+
+# Local config fallback (dev only; real config lives in ~/.config/arrctl)
+/config.toml
+
+# macOS
+.DS_Store
