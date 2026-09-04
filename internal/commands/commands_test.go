@@ -315,20 +315,48 @@ func TestReadsAreNotGated(t *testing.T) {
 // The `command run` allowlist: the sugar names run without --confirm, anything
 // else does not, because the command-name set is not enumerated in the API doc.
 func TestCommandRunAllowlist(t *testing.T) {
-	for _, name := range []string{"MoviesSearch", "RefreshMovie", "RescanMovie",
-		"MissingMoviesSearch", "RssSync"} {
+	for _, name := range []string{"MoviesSearch", "RefreshMovie", "RescanMovie"} {
 		if !runAllowlist(radarrSpec)[name] {
 			t.Errorf("radarr allowlist missing %s", name)
 		}
 	}
 	for _, name := range []string{"SeriesSearch", "SeasonSearch", "EpisodeSearch",
-		"RefreshSeries", "RescanSeries", "MissingEpisodeSearch", "RssSync"} {
+		"RefreshSeries", "RescanSeries"} {
 		if !runAllowlist(sonarrSpec)[name] {
 			t.Errorf("sonarr allowlist missing %s", name)
 		}
 	}
 	if runAllowlist(radarrSpec)["Backup"] || runAllowlist(radarrSpec)["DeleteMovies"] {
 		t.Error("allowlist is not closed")
+	}
+}
+
+// The library-wide command names must NOT be on the allowlist. Their sugar
+// verbs are confirm-gated because they grab whatever they find; the raw
+// `command run` path to the same body has to be gated too, or the gate is
+// decorative.
+func TestLibraryWideCommandsAreGated(t *testing.T) {
+	for _, name := range []string{"MissingMoviesSearch", "RssSync"} {
+		if runAllowlist(radarrSpec)[name] {
+			t.Errorf("radarr allows %s without --confirm", name)
+		}
+	}
+	for _, name := range []string{"MissingEpisodeSearch", "RssSync"} {
+		if runAllowlist(sonarrSpec)[name] {
+			t.Errorf("sonarr allows %s without --confirm", name)
+		}
+	}
+	for _, args := range [][]string{
+		{"radarr", "command", "run", "--name", "MissingMoviesSearch"},
+		{"sonarr", "command", "run", "--name", "MissingEpisodeSearch"},
+		{"radarr", "command", "run", "--name", "RssSync"},
+		{"sonarr", "command", "run", "--name", "RssSync"},
+	} {
+		full := append(append([]string{}, args...), "--url", "http://127.0.0.1:1", "--apikey", "x")
+		_, cerr := run(t, full...)
+		if cerr == nil || cerr.Code != output.CodeConfirmRequired {
+			t.Errorf("%v was not gated: %+v", args, cerr)
+		}
 	}
 }
 

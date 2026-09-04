@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/corinthian/arrctl/internal/client"
+	"github.com/corinthian/arrctl/internal/config"
 	"github.com/corinthian/arrctl/internal/output"
 	"github.com/spf13/cobra"
 )
@@ -45,16 +46,21 @@ func isTerminal(status string) bool {
 // document enumerates the command-name set: an unrecognised name could be
 // anything, including one that starts downloads or rewrites the library.
 //
-// These are exactly the names behind the search sugar, per the spec.
+// These are the names behind the search sugar, with two deliberate omissions
+// from the spec's list: MissingMoviesSearch / MissingEpisodeSearch and RssSync.
+// Both are library-wide and grab whatever they find — the missing search across
+// every monitored record with no file, RssSync across every feed. Their sugar
+// verbs (`wanted search`, `rss sync`) are confirm-gated for that reason, and
+// leaving the raw `command run` path to the same body open would make the gate
+// decorative. Targeted search/refresh/rescan stay open: they act on ids the
+// caller named.
 func runAllowlist(s *appSpec) map[string]bool {
 	names := map[string]bool{
 		s.SearchCommand:  true,
 		s.RefreshCommand: true,
 		s.RescanCommand:  true,
-		s.MissingSearch:  true,
-		"RssSync":        true,
 	}
-	if s.Name == "sonarr" {
+	if s.Name == config.Sonarr {
 		names["SeasonSearch"] = true
 		names["EpisodeSearch"] = true
 	}

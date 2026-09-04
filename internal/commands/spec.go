@@ -36,7 +36,6 @@ type qbind struct {
 	cmd    *cobra.Command
 	flags  []qflag
 	strs   map[string]*string
-	bools  map[string]*bool
 	ints   map[string]*int
 	slices map[string]*[]string
 }
@@ -47,7 +46,6 @@ func bindQ(cmd *cobra.Command, flags []qflag) *qbind {
 	b := &qbind{
 		cmd: cmd, flags: flags,
 		strs:   map[string]*string{},
-		bools:  map[string]*bool{},
 		ints:   map[string]*int{},
 		slices: map[string]*[]string{},
 	}
@@ -185,14 +183,9 @@ type appSpec struct {
 	MissingSearch  string // MissingMoviesSearch / MissingEpisodeSearch
 }
 
-// pagingFlags are the paged-list query flags shared by both apps. --all is a
-// root persistent flag, applied by the client.
-var pagingFlags = []qflag{
-	{"page", "page", qInt, "page number"},
-	{"page-size", "pageSize", qInt, "records per page"},
-	{"sort-key", "sortKey", qString, "sort key"},
-	{"sort-dir", "sortDirection", qString, "sort direction: default|ascending|descending"},
-}
+// Paging (--page, --page-size, --sort-key, --sort-dir, --all) is NOT a qflag
+// set: those are root persistent flags, turned into query params by
+// App.pagingQuery. Only the per-command, per-app flags live in the tables below.
 
 // filterFlags are the queue/history filters both apps accept identically.
 var filterFlags = []qflag{

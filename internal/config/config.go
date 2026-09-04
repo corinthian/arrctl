@@ -4,7 +4,6 @@
 package config
 
 import (
-	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -26,16 +25,6 @@ const (
 
 // Apps is the closed set of app names, in stable order.
 var Apps = []App{Radarr, Sonarr}
-
-// Valid reports whether s names a known app.
-func Valid(s string) bool {
-	for _, a := range Apps {
-		if string(a) == s {
-			return true
-		}
-	}
-	return false
-}
 
 // KeychainService is the Keychain service name for an app's API key: service
 // `radarrctl` / `sonarrctl`, account `apikey` (ruled 2026-09-04 by what is
@@ -192,9 +181,6 @@ func Resolve(a App, f Flags, l *Loaded) (*AppConfig, error) {
 	c.URL = strings.TrimRight(c.URL, "/")
 	return c, nil
 }
-
-// ErrNoKey is returned by RequireKey when nothing supplied an API key.
-var ErrNoKey = errors.New("no api key")
 
 // KeyHint is the recovery line for a missing or rejected key. It never contains
 // a key value.

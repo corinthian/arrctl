@@ -187,8 +187,15 @@ every `delete`, `delete-bulk`, `editor-delete`, `bulk-delete`; `system restart`
 and `system shutdown`; `manualimport submit`; `movie import` / `series import`;
 `movie add` / `series add`; `queue delete*` and `queue grab*`; `release push`;
 `episode monitor`; `seasonpass`; `wanted search`; `rss sync`; and `command run`
-with a name outside the sugar allowlist, because neither API document
-enumerates the command-name set.
+with a name outside the allowlist, because neither API document enumerates the
+command-name set.
+
+The `command run` allowlist is the targeted search/refresh/rescan names only —
+`MoviesSearch`, `RefreshMovie`, `RescanMovie`, `SeriesSearch`, `SeasonSearch`,
+`EpisodeSearch`, `RefreshSeries`, `RescanSeries`. The library-wide names
+(`MissingMoviesSearch`, `MissingEpisodeSearch`, `RssSync`) are gated there too,
+so the gate on their sugar verbs cannot be walked around by spelling the body
+out by hand.
 
 `release grab` is deliberately **not** gated. Grabbing a chosen release is the
 point of the tool. The rule about disclosing a release's size before grabbing
