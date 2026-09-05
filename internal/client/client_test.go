@@ -360,3 +360,83 @@ func TestCrossOriginRedirectRefused(t *testing.T) {
 		t.Fatal("a cross-origin redirect was followed")
 	}
 }
+
+// Not every Servarr paged body carries totalRecords. Terminating on
+// len(merged) >= total treated an absent total as zero and stopped after the
+// first page, so --all silently returned a fraction of the list and said it was
+// the whole thing. Termination is the page itself: empty, or shorter than the
+// page size the response reports.
+func TestAllWithoutTotalRecords(t *testing.T) {
+	pages := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		pages++
+		if r.URL.Query().Get("page") == "1" {
+			w.Write([]byte(`{"page":1,"pageSize":2,"records":[{"id":1},{"id":2}]}`))
+			return
+		}
+		w.Write([]byte(`{"page":2,"pageSize":2,"records":[{"id":3}]}`))
+	}))
+	defer srv.Close()
+
+	c := newTestClient(t, srv, "radarr")
+	res, cerr := c.Do(context.Background(), http.MethodGet, "/history",
+		Options{All: true, Query: map[string][]string{"pageSize": {"2"}}})
+	if cerr != nil {
+		t.Fatal(cerr)
+	}
+	if pages != 2 {
+		t.Errorf("fetched %d pages, want 2", pages)
+	}
+	var body struct {
+		Records []json.RawMessage `json:"records"`
+	}
+	if err := json.Unmarshal(res.Data, &body); err != nil {
+		t.Fatal(err)
+	}
+	if len(body.Records) != 3 {
+		t.Errorf("merged %d records, want 3: --all dropped pages", len(body.Records))
+	}
+}
+
+// --all from a later page reports the page it actually started at. Reporting a
+// constant 1 told the caller it was holding the whole list from the top when it
+// was holding a tail.
+func TestAllFromLaterPage(t *testing.T) {
+	var got []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		p := r.URL.Query().Get("page")
+		got = append(got, p)
+		if p == "3" {
+			w.Write([]byte(`{"page":3,"pageSize":2,"totalRecords":8,"records":[{"id":5},{"id":6}]}`))
+			return
+		}
+		w.Write([]byte(`{"page":4,"pageSize":2,"totalRecords":8,"records":[{"id":7},{"id":8}]}`))
+	}))
+	defer srv.Close()
+
+	c := newTestClient(t, srv, "sonarr")
+	res, cerr := c.Do(context.Background(), http.MethodGet, "/wanted/missing",
+		Options{All: true, Query: map[string][]string{"page": {"3"}, "pageSize": {"2"}}})
+	if cerr != nil {
+		t.Fatal(cerr)
+	}
+	if strings.Join(got, ",") != "3,4" {
+		t.Errorf("requested pages %v, want [3 4]", got)
+	}
+	var body struct {
+		Page    int               `json:"page"`
+		Records []json.RawMessage `json:"records"`
+	}
+	if err := json.Unmarshal(res.Data, &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Page != 3 {
+		t.Errorf("merged body page = %d, want 3", body.Page)
+	}
+	if res.Pagination == nil || res.Pagination.Page != 3 {
+		t.Errorf("meta pagination = %+v, want page 3", res.Pagination)
+	}
+	if len(body.Records) != 4 {
+		t.Errorf("merged %d records, want 4", len(body.Records))
+	}
+}

@@ -204,7 +204,10 @@ func (c *Client) doOnce(ctx context.Context, method, path string, opts Options) 
 }
 
 // doAll auto-paginates a Servarr paged GET, merging the per-page `records`
-// arrays into one paged envelope. A non-paged body is returned untouched.
+// arrays into one paged envelope. A non-paged body is returned untouched. The
+// merged envelope reports the first page actually requested, not a constant 1:
+// `--all --page 3` hands back a tail, and saying "page 1" would present it as
+// the whole list from the top.
 func (c *Client) doAll(ctx context.Context, path string, opts Options) (*Result, *output.CLIError) {
 	start := time.Now()
 	page := 1
@@ -255,14 +258,31 @@ func (c *Client) doAll(ctx context.Context, path string, opts Options) (*Result,
 		}
 		merged = append(merged, p.Records...)
 		total = p.TotalRecords
-		if len(p.Records) == 0 || len(merged) >= total {
+
+		// The page itself says whether there is more: an empty page or a
+		// short one is the last. "Short" is measured against the page size
+		// the response reports, falling back to the size requested, because
+		// an instance may cap the page size below what was asked for.
+		size := pageSize
+		if p.PageSize > 0 {
+			size = p.PageSize
+		}
+		if len(p.Records) == 0 || len(p.Records) < size {
+			break
+		}
+		// totalRecords is a secondary bound only, and not every paged body
+		// carries one — an absent total read as zero used to end the walk
+		// after page one. The arithmetic has to count the pages that were
+		// skipped when the walk started later than page 1: merged never
+		// holds them.
+		if total > 0 && (firstPage-1)*size+len(merged) >= total {
 			break
 		}
 		page++
 	}
 
 	out, err := json.Marshal(map[string]interface{}{
-		"page": 1, "pageSize": len(merged), "totalRecords": total, "records": merged,
+		"page": firstPage, "pageSize": len(merged), "totalRecords": total, "records": merged,
 	})
 	if err != nil {
 		return nil, &output.CLIError{
@@ -273,7 +293,7 @@ func (c *Client) doAll(ctx context.Context, path string, opts Options) (*Result,
 	return &Result{
 		Data:       out,
 		Status:     http.StatusOK,
-		Pagination: &output.Pagination{Page: 1, PageSize: len(merged), TotalRecords: total},
+		Pagination: &output.Pagination{Page: firstPage, PageSize: len(merged), TotalRecords: total},
 		Endpoint:   resolvePath(path, opts),
 		DurationMS: time.Since(start).Milliseconds(),
 	}, nil
