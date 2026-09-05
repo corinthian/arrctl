@@ -246,6 +246,17 @@ func validateURL(raw string) error {
 	if u.Host == "" {
 		return fmt.Errorf("url %q has no host", raw)
 	}
+	// A base URL is a scheme, a host and optionally a path — a reverse-proxied
+	// instance is normally http://host/radarr. It is never a query or a
+	// fragment: arrctl appends its own path and query to this, so a base
+	// carrying either could not have been working, and the failure is silent
+	// (a request to / with the caller's query) rather than loud.
+	if u.RawQuery != "" || u.ForceQuery {
+		return fmt.Errorf("url %q must not contain a query string; a base url is scheme://host[/path]", raw)
+	}
+	if u.Fragment != "" {
+		return fmt.Errorf("url %q must not contain a fragment; a base url is scheme://host[/path]", raw)
+	}
 	switch u.Scheme {
 	case "http", "https":
 		return nil

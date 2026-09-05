@@ -440,3 +440,28 @@ func TestAllFromLaterPage(t *testing.T) {
 		t.Errorf("merged %d records, want 4", len(body.Records))
 	}
 }
+
+// A Servarr instance behind a reverse proxy has a path in its base URL. The
+// request builder must keep it: dropping it sends every call to the proxy root.
+func TestBuildRequestPreservesURLBase(t *testing.T) {
+	var gotPath, gotQuery string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath, gotQuery = r.URL.Path, r.URL.Query().Get("pageSize")
+		w.Write([]byte(`{}`))
+	}))
+	defer srv.Close()
+
+	for _, base := range []string{srv.URL + "/radarr", srv.URL + "/radarr/"} {
+		c := New(Config{App: "radarr", BaseURL: base, APIKey: "k", Timeout: 5 * time.Second})
+		if _, cerr := c.Do(context.Background(), http.MethodGet, "/movie",
+			Options{Query: map[string][]string{"pageSize": {"5"}}}); cerr != nil {
+			t.Fatalf("%s: %v", base, cerr)
+		}
+		if gotPath != "/radarr/api/v3/movie" {
+			t.Errorf("base %q produced path %q, want /radarr/api/v3/movie", base, gotPath)
+		}
+		if gotQuery != "5" {
+			t.Errorf("base %q lost the query: pageSize = %q", base, gotQuery)
+		}
+	}
+}

@@ -326,3 +326,34 @@ func TestTolerantLoadSurvivesBadExplicitPath(t *testing.T) {
 		t.Fatalf("the tolerant form failed on a missing explicit path: %v", err)
 	}
 }
+
+// A base URL carrying a query or a fragment cannot have been working: the
+// request builder appended its own path and query to it, producing a URL whose
+// path was empty and whose query was the caller's. Fail at resolution, where
+// the message can name the problem, rather than issuing a nonsense request.
+func TestValidateURLRejectsQueryAndFragment(t *testing.T) {
+	stubKeychain(t, map[string]string{"radarrctl/apikey": "K"})
+	for _, raw := range []string{
+		"http://host?apikey=leaked",
+		"http://host/radarr?x=1",
+		"http://host#frag",
+		"http://host/radarr#frag",
+	} {
+		if _, err := Resolve(Radarr, Flags{URL: raw}, &Loaded{}); err == nil {
+			t.Errorf("Resolve accepted %q", raw)
+		}
+	}
+}
+
+// A path is NOT a query: http://host/radarr is the ordinary reverse-proxy base
+// for a Servarr instance and has to keep working.
+func TestReverseProxyPathBaseIsAllowed(t *testing.T) {
+	stubKeychain(t, map[string]string{"radarrctl/apikey": "K"})
+	c, err := Resolve(Radarr, Flags{URL: "http://host/radarr"}, &Loaded{})
+	if err != nil {
+		t.Fatalf("a reverse-proxy base was rejected: %v", err)
+	}
+	if c.URL != "http://host/radarr" {
+		t.Errorf("url = %q", c.URL)
+	}
+}

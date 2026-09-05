@@ -307,9 +307,22 @@ func resolvePath(path string, opts Options) string {
 	return APIPrefix + path
 }
 
+// buildRequest assembles one request URL from the base, the resolved API path
+// and the per-call query. The base is parsed once and its path prefixed to the
+// API path, rather than concatenating strings: a reverse-proxied instance has a
+// path in its base (http://host/radarr) that must survive, and a trailing slash
+// must not produce //api. ResolveReference and path.Join are both wrong here —
+// each silently drops the base path for a rooted reference.
 func (c *Client) buildRequest(ctx context.Context, method, path string, opts Options) (*http.Request, *output.CLIError) {
 	full := resolvePath(path, opts)
-	u := c.baseURL + full
+
+	u, perr := url.Parse(c.baseURL)
+	if perr != nil || u.Host == "" {
+		return nil, &output.CLIError{
+			Code: output.CodeBadConfig, Message: "unusable base url for " + c.app,
+			Exit: output.ExitUser, App: c.app, Endpoint: full,
+		}
+	}
 
 	q := url.Values{}
 	for k, vs := range opts.Query {
@@ -320,9 +333,9 @@ func (c *Client) buildRequest(ctx context.Context, method, path string, opts Opt
 	if !opts.NoKey && c.placement == KeyInQuery {
 		q.Set("apikey", c.apiKey)
 	}
-	if enc := q.Encode(); enc != "" {
-		u += "?" + enc
-	}
+	u.Path = strings.TrimSuffix(u.Path, "/") + full
+	u.RawPath = ""
+	u.RawQuery = q.Encode()
 
 	var bodyReader io.Reader
 	if opts.Body != nil {
@@ -335,7 +348,7 @@ func (c *Client) buildRequest(ctx context.Context, method, path string, opts Opt
 		}
 		bodyReader = bytes.NewReader(b)
 	}
-	req, err := http.NewRequestWithContext(ctx, method, u, bodyReader)
+	req, err := http.NewRequestWithContext(ctx, method, u.String(), bodyReader)
 	if err != nil {
 		return nil, &output.CLIError{
 			Code: output.CodeBadConfig, Message: "building request: " + err.Error(),
