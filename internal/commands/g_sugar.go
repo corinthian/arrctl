@@ -148,8 +148,10 @@ func commandBodyFor(name string, ids []int) (sugarBody, *output.CLIError) {
 
 // wantedSearch is `<app> wanted search`: MissingMoviesSearch on Radarr,
 // MissingEpisodeSearch on Sonarr. It searches for EVERY monitored missing
-// record and will start downloads, so it is confirm-gated even though its name
-// is on the `command run` allowlist.
+// record and will start downloads, so it is confirm-gated — and runAllowlist
+// deliberately excludes the same name, so the raw `command run` path to this
+// body is gated too. Both doors to a library-wide search need a confirmation;
+// leaving one open would make the other decorative.
 func (a *App) wantedSearch(s *appSpec) *cobra.Command {
 	var wait bool
 	var timeout, interval time.Duration

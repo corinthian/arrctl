@@ -158,3 +158,42 @@ func TestConfirmRequiredIsUserExit(t *testing.T) {
 		t.Error("confirm refusal carries no recovery hint")
 	}
 }
+
+// The documented envelope is {ok, data, meta} with data object|array|null, and
+// both the Emit comment and the --llm schema string promise `data: null` on an
+// empty body. omitempty on a shared struct field meant the key was dropped
+// instead, so a 204 emitted an envelope with no data key at all — a consumer
+// reading env["data"] got "absent", not "null".
+func TestEmptyDataEmitsNull(t *testing.T) {
+	var buf bytes.Buffer
+	w := New(&buf, FormatJSON)
+	if err := w.Emit(&Result{Data: nil, Meta: &Meta{App: "radarr"}}); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(buf.Bytes(), []byte(`"data": null`)) {
+		t.Errorf("no explicit null data in the envelope:\n%s", buf.String())
+	}
+	var env map[string]json.RawMessage
+	if err := json.Unmarshal(buf.Bytes(), &env); err != nil {
+		t.Fatalf("not valid JSON: %s", buf.String())
+	}
+	if _, ok := env["data"]; !ok {
+		t.Error("the data key is absent, not null")
+	}
+}
+
+// omitempty stays on Envelope.Data, because the struct is shared with
+// EmitError: dropping it would give every error envelope a "data":null it has
+// no business carrying.
+func TestErrorEnvelopeHasNoDataKey(t *testing.T) {
+	var buf bytes.Buffer
+	w := New(&buf, FormatJSON)
+	w.EmitError(&CLIError{Code: CodeArrNotFound, Message: "nope", Exit: ExitArr})
+	var env map[string]json.RawMessage
+	if err := json.Unmarshal(buf.Bytes(), &env); err != nil {
+		t.Fatalf("not valid JSON: %s", buf.String())
+	}
+	if _, ok := env["data"]; ok {
+		t.Errorf("an error envelope carries a data key:\n%s", buf.String())
+	}
+}

@@ -196,9 +196,13 @@ type Result struct {
 }
 
 // Emit renders a successful result per the configured format. An empty body
-// (e.g. HTTP 204) is normalized to nil so the JSON path emits `data:null`
-// rather than failing to marshal an empty RawMessage. A write failure is
-// returned as a typed CLIError so it stays inside the error model.
+// (e.g. HTTP 204) is normalized to nil, and the JSON path then emits an
+// explicit `data: null` — the envelope the spec, the README and the --llm
+// schema string all promise. Envelope.Data keeps its omitempty because the
+// struct is shared with EmitError: dropping it would give every error envelope
+// a "data":null it has no business carrying, so the null is supplied here
+// instead. A write failure is returned as a typed CLIError so it stays inside
+// the error model.
 func (w *Writer) Emit(r *Result) error {
 	if len(r.Data) == 0 {
 		r.Data = nil
@@ -212,7 +216,11 @@ func (w *Writer) Emit(r *Result) error {
 	case FormatTerse:
 		err = w.writeTerse(r)
 	default:
-		err = w.writeJSON(Envelope{OK: true, Data: r.Data, Meta: r.Meta})
+		data := r.Data
+		if len(data) == 0 {
+			data = json.RawMessage("null")
+		}
+		err = w.writeJSON(Envelope{OK: true, Data: data, Meta: r.Meta})
 	}
 	if err != nil {
 		return NewError(CodeParseError, "writing output: "+err.Error())
