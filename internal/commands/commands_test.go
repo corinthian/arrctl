@@ -378,7 +378,11 @@ func TestSugarBodies(t *testing.T) {
 		{"RescanSeries", []int{11}, `{"name":"RescanSeries","seriesId":11}`},
 	}
 	for _, tc := range cases {
-		b, err := json.Marshal(commandBodyFor(tc.name, tc.ids))
+		body, cerr := commandBodyFor(tc.name, tc.ids)
+		if cerr != nil {
+			t.Fatalf("%s rejected %v: %+v", tc.name, tc.ids, cerr)
+		}
+		b, err := json.Marshal(body)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -583,5 +587,83 @@ func TestWaitOnCompletedCommandStaysSuccess(t *testing.T) {
 	}
 	if !strings.Contains(out, "completed") {
 		t.Errorf("output does not carry the record: %s", out)
+	}
+}
+
+// The singular command shapes carry ONE id. Handing them several used to build
+// a body from ids[0] and drop the rest silently: the caller was told a search
+// had been dispatched for every id when only the first had been. An error is
+// the honest answer — the envelope is single-record shaped, so fanning out
+// would need a multi-result contract this tool does not have.
+func TestSingularCommandRejectsMultipleIDs(t *testing.T) {
+	for _, name := range []string{"RescanMovie", "SeriesSearch", "RefreshSeries", "RescanSeries"} {
+		t.Run(name, func(t *testing.T) {
+			body, cerr := commandBodyFor(name, []int{11, 12})
+			if cerr == nil {
+				b, _ := json.Marshal(body)
+				t.Fatalf("%s accepted two ids and built %s", name, b)
+			}
+			if cerr.Code != output.CodeBadRequest || cerr.Exit != output.ExitUser {
+				t.Errorf("code = %s exit = %d, want BAD_REQUEST / 1", cerr.Code, cerr.Exit)
+			}
+			if cerr.Hint == "" {
+				t.Error("no hint naming the one-at-a-time loop")
+			}
+		})
+	}
+}
+
+// The plural shapes are unaffected: `radarr movie search --id 1,2` is a
+// documented, working invocation and must stay one.
+func TestPluralCommandsStillTakeManyIDs(t *testing.T) {
+	for _, name := range []string{"MoviesSearch", "RefreshMovie"} {
+		body, cerr := commandBodyFor(name, []int{11, 12})
+		if cerr != nil {
+			t.Fatalf("%s rejected two ids: %+v", name, cerr)
+		}
+		b, _ := json.Marshal(body)
+		if !strings.Contains(string(b), "12") {
+			t.Errorf("%s dropped the second id: %s", name, b)
+		}
+	}
+}
+
+// A non-positive id is a usage error wherever it is typed, matching requireID.
+// Servarr has no record 0 and no record -3; sending either is a wasted round
+// trip at best and a confusing 404 at worst.
+func TestIntListRejectsNonPositive(t *testing.T) {
+	for _, raw := range []string{"0", "-3"} {
+		if _, cerr := intList([]string{raw}, "--id"); cerr == nil {
+			t.Errorf("intList accepted %q", raw)
+		} else if cerr.Code != output.CodeBadRequest || cerr.Exit != output.ExitUser {
+			t.Errorf("%q: code = %s exit = %d, want BAD_REQUEST / 1", raw, cerr.Code, cerr.Exit)
+		}
+	}
+	if _, cerr := intList([]string{"7", "0"}, "--id"); cerr == nil {
+		t.Error("intList accepted a non-positive id alongside a valid one")
+	}
+	if got, cerr := intList([]string{"7", "9"}, "--id"); cerr != nil || len(got) != 2 {
+		t.Errorf("intList rejected valid ids: %v %+v", got, cerr)
+	}
+}
+
+// End to end: the rejection happens before any POST is made.
+func TestSugarRejectsMultipleIDsBeforeDispatch(t *testing.T) {
+	posts := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			posts++
+		}
+		fmt.Fprint(w, `{"id":1,"name":"SeriesSearch","status":"completed"}`)
+	}))
+	defer srv.Close()
+
+	_, cerr := run(t, "sonarr", "series", "search", "--id", "11,12",
+		"--url", srv.URL, "--apikey", "test-only")
+	if cerr == nil || cerr.Code != output.CodeBadRequest {
+		t.Fatalf("two ids were not rejected: %+v", cerr)
+	}
+	if posts != 0 {
+		t.Errorf("%d commands were dispatched before the rejection", posts)
 	}
 }

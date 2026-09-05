@@ -75,6 +75,9 @@ Booleans take a value: `--monitored true`, never a bare `--monitored`.
 arrctl radarr movie search --id N --wait
 arrctl sonarr season search --id N --season S --wait
 ```
+`sonarr series search|refresh|rescan` and `radarr movie rescan` take one id
+only — several is an error, so loop over them. `radarr movie search|refresh`
+and `sonarr episode search` take a list.
 `--wait` polls to a terminal status and reports the outcome. On `completed` the
 record's `message` says how many reports were downloaded — that message is the
 honest answer to "did it get anything". A command that ends `failed`, `aborted`

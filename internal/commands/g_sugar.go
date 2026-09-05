@@ -47,6 +47,9 @@ func intList(vals []string, flag string) ([]int, *output.CLIError) {
 		if err != nil {
 			return nil, output.UsageError(flag + " takes integers; got " + strconv.Quote(v))
 		}
+		if n <= 0 {
+			return nil, output.UsageError(flag + " takes positive integers; got " + strconv.Quote(v))
+		}
 		out = append(out, n)
 	}
 	if len(out) == 0 {
@@ -88,10 +91,9 @@ func (a *App) sugarIDs(use, short string, s *appSpec, name string) *cobra.Comman
 			if cerr != nil {
 				return cerr
 			}
-			body := commandBodyFor(name, nums)
-			if body == nil {
-				return output.NewError(output.CodeParseError,
-					"no known body shape for command "+name)
+			body, cerr := commandBodyFor(name, nums)
+			if cerr != nil {
+				return cerr
 			}
 			return a.dispatch(body, wait, timeout, interval)
 		},
@@ -104,22 +106,39 @@ func (a *App) sugarIDs(use, short string, s *appSpec, name string) *cobra.Comman
 // commandBodyFor returns the documented body for a command name. The plural vs
 // singular id field is a per-command fact from the two APIs, verified live
 // 2026-09-04 for MoviesSearch, RescanMovie and RefreshMovie.
-func commandBodyFor(name string, ids []int) sugarBody {
+//
+// A singular shape takes exactly one id and is an error on more than one, never
+// a body built from the first with the rest dropped. Fanning out would mean
+// several POSTs and several command records, but the envelope is single-record
+// shaped: `data` is one record, --terse is one line, --wait polls one id. That
+// is a multi-result contract this tool does not have and the spec does not
+// describe, so the caller loops instead.
+func commandBodyFor(name string, ids []int) (sugarBody, *output.CLIError) {
+	single := func(field string) (sugarBody, *output.CLIError) {
+		if len(ids) > 1 {
+			return nil, output.UsageErrorHint(
+				name+" takes exactly one id; got "+itoa(len(ids)),
+				"this command name carries a single "+field+
+					", so run it once per id rather than passing a list")
+		}
+		return sugarBody{"name": name, field: ids[0]}, nil
+	}
 	switch name {
 	case "MoviesSearch":
-		return sugarBody{"name": name, "movieIds": ids}
+		return sugarBody{"name": name, "movieIds": ids}, nil
 	case "RefreshMovie":
-		return sugarBody{"name": name, "movieIds": ids}
+		return sugarBody{"name": name, "movieIds": ids}, nil
 	case "RescanMovie":
-		return sugarBody{"name": name, "movieId": ids[0]}
+		return single("movieId")
 	case "SeriesSearch":
-		return sugarBody{"name": name, "seriesId": ids[0]}
+		return single("seriesId")
 	case "RefreshSeries":
-		return sugarBody{"name": name, "seriesId": ids[0]}
+		return single("seriesId")
 	case "RescanSeries":
-		return sugarBody{"name": name, "seriesId": ids[0]}
+		return single("seriesId")
 	}
-	return nil
+	return nil, output.NewError(output.CodeParseError,
+		"no known body shape for command "+name)
 }
 
 // wantedSearch is `<app> wanted search`: MissingMoviesSearch on Radarr,

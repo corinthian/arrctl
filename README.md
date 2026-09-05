@@ -184,6 +184,12 @@ None of these ranks or grabs on its own; the app's own automatic search does
 the grabbing, under its own profile rules. That is exactly why the
 library-wide ones are gated — see below.
 
+The `--id N...` rows take a list; the plain `--id N` rows take exactly one id,
+because that is the body shape the API documents. Passing several to a singular
+verb is a `BAD_REQUEST` at exit 1, not a search of the first with the rest
+dropped — loop instead. `--id 0` and negative ids are `BAD_REQUEST` everywhere,
+matching every other `--id`.
+
 ## Confirm gates
 
 Gated actions refuse without `--confirm` or `ARRCTL_CONFIRM=1`, returning
