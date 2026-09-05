@@ -48,7 +48,7 @@ timeout = "45s"
 // resting state, with no key ever written to disk.
 func TestResolveFileThenKeychain(t *testing.T) {
 	stubKeychain(t, map[string]string{"radarrctl/apikey": "KEYCHAIN-VALUE"})
-	l, err := LoadFile(writeConfig(t, sample))
+	l, err := LoadFile(writeConfig(t, sample), false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -73,7 +73,7 @@ func TestResolveFileThenKeychain(t *testing.T) {
 // Env beats the file; flags beat env. Both must beat the Keychain.
 func TestResolvePrecedence(t *testing.T) {
 	stubKeychain(t, map[string]string{"sonarrctl/apikey": "FROM-KEYCHAIN"})
-	l, err := LoadFile(writeConfig(t, sample))
+	l, err := LoadFile(writeConfig(t, sample), false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -102,7 +102,7 @@ func TestResolvePrecedence(t *testing.T) {
 // against an instance with a known-bad certificate.
 func TestInsecureFromFileSurvivesUnsetFlag(t *testing.T) {
 	stubKeychain(t, map[string]string{"sonarrctl/apikey": "K"})
-	l, _ := LoadFile(writeConfig(t, sample))
+	l, _ := LoadFile(writeConfig(t, sample), false)
 
 	c, err := Resolve(Sonarr, Flags{Insecure: false, InsecureSet: false}, l)
 	if err != nil {
@@ -214,4 +214,115 @@ func contains(hay, needle string) bool {
 		}
 		return false
 	})()
+}
+
+// isolateHome points the default config path at an empty directory, so a test
+// asserting on explicit paths cannot be answered by the developer's real
+// ~/.config/arrctl/config.toml.
+func isolateHome(t *testing.T) {
+	t.Helper()
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("ARRCTL_CONFIG", "")
+}
+
+// An explicit config source is authoritative. Silently falling back to the
+// default meant `--config /path/that/moved` read the wrong instance's settings
+// and reported success, which is the worst outcome available: the caller
+// believes it targeted one thing and targeted another.
+func TestExplicitConfigMissingIsError(t *testing.T) {
+	isolateHome(t)
+	if _, err := LoadFile("/nonexistent/arrctl/x.toml", false); err == nil {
+		t.Fatal("a missing --config path fell through to the default")
+	}
+}
+
+func TestExplicitConfigDirectoryIsError(t *testing.T) {
+	isolateHome(t)
+	if _, err := LoadFile(t.TempDir(), false); err == nil {
+		t.Fatal("a directory was accepted as a config file")
+	}
+}
+
+// $ARRCTL_CONFIG is an explicit source too, and gets the same treatment.
+func TestEnvConfigMissingIsError(t *testing.T) {
+	isolateHome(t)
+	t.Setenv("ARRCTL_CONFIG", "/nonexistent/arrctl/env.toml")
+	if _, err := LoadFile("", false); err == nil {
+		t.Fatal("a missing $ARRCTL_CONFIG path fell through to the default")
+	}
+	r := ResolvedConfigPath("")
+	if !r.Explicit || r.Err == nil {
+		t.Errorf("resolution = %+v, want explicit with an error", r)
+	}
+}
+
+// An empty $ARRCTL_CONFIG is unset, not a path to the empty string.
+func TestEmptyEnvConfigCountsAsUnset(t *testing.T) {
+	isolateHome(t)
+	l, err := LoadFile("", false)
+	if err != nil {
+		t.Fatalf("an empty $ARRCTL_CONFIG was treated as an explicit path: %v", err)
+	}
+	if l.Source != "" {
+		t.Errorf("source = %q, want none", l.Source)
+	}
+}
+
+// The default file may be absent silently — every setting has a flag/env path.
+func TestMissingDefaultConfigStaysSilent(t *testing.T) {
+	isolateHome(t)
+	l, err := LoadFile("", false)
+	if err != nil {
+		t.Fatalf("a missing default config errored: %v", err)
+	}
+	if l.Source != "" {
+		t.Errorf("source = %q, want none", l.Source)
+	}
+	if r := ResolvedConfigPath(""); r.Explicit || r.Err != nil || r.Path != "" {
+		t.Errorf("resolution = %+v, want a silent empty default", r)
+	}
+}
+
+// A read error that is not "no such file" is a config error wherever it
+// happens: reading it as "no file" would silently ignore settings that exist.
+func TestUnreadableConfigIsError(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads a mode-000 file regardless")
+	}
+	isolateHome(t)
+	p := writeConfig(t, sample)
+	if err := os.Chmod(p, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(p, 0o600) })
+	if _, err := LoadFile(p, false); err == nil {
+		t.Fatal("an unreadable config was read as no config")
+	}
+}
+
+// A good explicit path still resolves and still parses.
+func TestExplicitConfigIsRead(t *testing.T) {
+	isolateHome(t)
+	p := writeConfig(t, sample)
+	l, err := LoadFile(p, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if l.Source != p || l.File.Radarr.URL != "http://radarr.example" {
+		t.Errorf("loaded %+v from %q", l.File, l.Source)
+	}
+	r := ResolvedConfigPath(p)
+	if !r.Explicit || r.Err != nil || r.Path != p {
+		t.Errorf("resolution = %+v", r)
+	}
+}
+
+// The tolerant form is what the read-only diagnostics use: `config path` exists
+// to explain exactly this failure, and `config init --config /new/file.toml`
+// targets a file that does not exist yet. Neither may die on it.
+func TestTolerantLoadSurvivesBadExplicitPath(t *testing.T) {
+	isolateHome(t)
+	if _, err := LoadFile("/nonexistent/arrctl/x.toml", true); err != nil {
+		t.Fatalf("the tolerant form failed on a missing explicit path: %v", err)
+	}
 }

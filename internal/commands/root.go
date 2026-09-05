@@ -44,7 +44,7 @@ func NewRoot() (*cobra.Command, *App) {
 					"invalid --sort-dir "+g.SortDir, "valid values: default, ascending, descending")
 			}
 
-			loaded, err := config.LoadFile(g.ConfigPath)
+			loaded, err := config.LoadFile(g.ConfigPath, tolerateBadConfig(cmd))
 			if err != nil {
 				return output.NewError(output.CodeBadConfig, err.Error())
 			}
@@ -118,6 +118,16 @@ func newAppRoot(app *App, spec *appSpec) *cobra.Command {
 	addAll(c, app, spec)
 	hardenGroup(c)
 	return c
+}
+
+// annTolerateBadConfig marks the read-only diagnostics that must survive a
+// config path they cannot use: `config path` reports exactly that failure, and
+// `config init --config /new/file.toml` names a file that does not exist yet.
+// Nothing that talks to an instance carries it.
+const annTolerateBadConfig = "tolerate_bad_config"
+
+func tolerateBadConfig(cmd *cobra.Command) bool {
+	return cmd.Annotations[annTolerateBadConfig] == "true"
 }
 
 // targetApp walks up from cmd to find the app sub-root it lives under.

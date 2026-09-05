@@ -118,6 +118,9 @@ as JSON. Read those instead of guessing.
   `history list` is.
 - `--all` stops at 100 pages with `PAGINATION_RUNAWAY`. On a big history, page
   deliberately instead.
+- A `--config` or `$ARRCTL_CONFIG` path that is missing or unreadable is a
+  `BAD_CONFIG` at exit 1, not a quiet fall back to the default file. `arrctl
+  config path` diagnoses it and still exits 0.
 
 ## What this skill does not do
 

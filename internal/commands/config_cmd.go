@@ -21,9 +21,10 @@ func (a *App) configInit() *cobra.Command {
 	var radarrURL, sonarrURL, timeout string
 	var sonarrInsecure, radarrInsecure, force bool
 	c := &cobra.Command{
-		Use:   "init",
-		Short: "Write config.toml (URLs only; keys stay in the Keychain)",
-		Args:  cobra.NoArgs,
+		Use:         "init",
+		Short:       "Write config.toml (URLs only; keys stay in the Keychain)",
+		Args:        cobra.NoArgs,
+		Annotations: map[string]string{annTolerateBadConfig: "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if radarrURL == "" && sonarrURL == "" {
 				return output.UsageErrorHint(
@@ -74,7 +75,7 @@ func (a *App) configShow() *cobra.Command {
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			out := map[string]interface{}{
-				"config_in_use": config.ResolvedConfigPath(a.Flags.ConfigPath),
+				"config_in_use": config.ResolvedConfigPath(a.Flags.ConfigPath).Path,
 			}
 			for _, app := range config.Apps {
 				row := map[string]interface{}{}
@@ -103,9 +104,10 @@ func (a *App) configShow() *cobra.Command {
 // configPath prints where config and keys are read from. No secrets.
 func (a *App) configPath() *cobra.Command {
 	return &cobra.Command{
-		Use:   "path",
-		Short: "Show resolved config file and Keychain locations",
-		Args:  cobra.NoArgs,
+		Use:         "path",
+		Short:       "Show resolved config file and Keychain locations",
+		Args:        cobra.NoArgs,
+		Annotations: map[string]string{annTolerateBadConfig: "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			resolved := config.ResolvedConfigPath(a.Flags.ConfigPath)
 			def, _ := config.DefaultConfigPath()
@@ -118,13 +120,23 @@ func (a *App) configPath() *cobra.Command {
 				}
 			}
 			return a.emitLocal(map[string]interface{}{
-				"config_in_use":  resolved,
-				"config_default": def,
-				"config_found":   resolved != "",
-				"apikeys":        keys,
+				"config_in_use":   resolved.Path,
+				"config_default":  def,
+				"config_found":    resolved.Found(),
+				"config_explicit": resolved.Explicit,
+				"config_error":    errText(resolved.Err),
+				"apikeys":         keys,
 			}, "")
 		},
 	}
+}
+
+// errText renders a resolution error for the payload, "" when there is none.
+func errText(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
 }
 
 // redact reports a key's presence without disclosing any of it.

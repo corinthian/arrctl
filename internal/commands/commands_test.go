@@ -667,3 +667,47 @@ func TestSugarRejectsMultipleIDsBeforeDispatch(t *testing.T) {
 		t.Errorf("%d commands were dispatched before the rejection", posts)
 	}
 }
+
+// `config path` is the read-only diagnostic for a broken config path, so it
+// must survive one. It reports the failure in its payload rather than dying.
+func TestConfigPathToleratesBadExplicitPath(t *testing.T) {
+	out, cerr := run(t, "config", "path", "--config", "/nonexistent/arrctl/x.toml")
+	if cerr != nil {
+		t.Fatalf("config path died on the path it exists to diagnose: %+v", cerr)
+	}
+	var env struct {
+		OK   bool `json:"ok"`
+		Data struct {
+			Found    bool   `json:"config_found"`
+			Explicit bool   `json:"config_explicit"`
+			Error    string `json:"config_error"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(out), &env); err != nil {
+		t.Fatalf("not the envelope: %v\n%s", err, out)
+	}
+	if !env.OK {
+		t.Error("ok = false")
+	}
+	if env.Data.Found {
+		t.Error("config_found = true for a path that does not exist")
+	}
+	if !env.Data.Explicit {
+		t.Error("config_explicit = false for an explicit --config")
+	}
+	if env.Data.Error == "" {
+		t.Error("config_error is empty; it must say why the path is unusable")
+	}
+}
+
+// Every other command fails closed on it, at exit 1.
+func TestBadExplicitConfigIsBadConfig(t *testing.T) {
+	_, cerr := run(t, "radarr", "system", "status", "--config", "/nonexistent/arrctl/x.toml",
+		"--url", "http://127.0.0.1:1", "--apikey", "x")
+	if cerr == nil {
+		t.Fatal("a missing --config path was silently ignored")
+	}
+	if cerr.Code != output.CodeBadConfig || cerr.Exit != output.ExitUser {
+		t.Errorf("code = %s exit = %d, want BAD_CONFIG / 1", cerr.Code, cerr.Exit)
+	}
+}

@@ -4,6 +4,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -93,22 +94,42 @@ type Loaded struct {
 	Source string
 }
 
-// LoadFile reads config.toml. A missing file is not an error — every setting
-// has an env/flag path.
-func LoadFile(explicit string) (*Loaded, error) {
+// LoadFile reads config.toml. A missing DEFAULT file is not an error — every
+// setting has an env/flag path. An explicit source is different: `--config` and
+// `$ARRCTL_CONFIG` are the caller saying which file to use, so an unusable one
+// fails rather than falling through to the default. Silently reading a
+// different file than the caller named is the worst outcome available, because
+// the wrong instance answers and nothing says so.
+//
+// tolerate is for the read-only diagnostics only — `config path` exists to
+// explain this very failure, and `config init --config /new/file.toml` targets
+// a file that does not exist yet. Nothing that talks to an instance sets it.
+func LoadFile(explicit string, tolerate bool) (*Loaded, error) {
 	l := &Loaded{}
-	path := resolveConfigPath(explicit)
-	if path == "" {
+	r := resolveConfigPath(explicit)
+	if r.Err != nil {
+		if tolerate {
+			return l, nil
+		}
+		return nil, r.Err
+	}
+	if r.Path == "" {
 		return l, nil
 	}
-	b, err := os.ReadFile(path)
+	b, err := os.ReadFile(r.Path)
 	if err != nil {
-		return nil, fmt.Errorf("reading %s: %w", path, err)
+		if tolerate {
+			return l, nil
+		}
+		return nil, fmt.Errorf("reading %s: %w", r.Path, err)
 	}
 	if err := toml.Unmarshal(b, &l.File); err != nil {
-		return nil, fmt.Errorf("parsing %s: %w", path, err)
+		if tolerate {
+			return l, nil
+		}
+		return nil, fmt.Errorf("parsing %s: %w", r.Path, err)
 	}
-	l.Source = path
+	l.Source = r.Path
 	return l, nil
 }
 
@@ -233,29 +254,64 @@ func validateURL(raw string) error {
 	}
 }
 
-// resolveConfigPath returns the first existing config.toml: explicit flag,
-// $ARRCTL_CONFIG, then ~/.config/arrctl/config.toml.
-func resolveConfigPath(explicit string) string {
-	candidates := []string{}
-	if explicit != "" {
-		candidates = append(candidates, explicit)
-	}
-	if env := os.Getenv("ARRCTL_CONFIG"); env != "" {
-		candidates = append(candidates, env)
-	}
-	if p, err := DefaultConfigPath(); err == nil {
-		candidates = append(candidates, p)
-	}
-	for _, p := range candidates {
-		if st, err := os.Stat(p); err == nil && !st.IsDir() {
-			return p
-		}
-	}
-	return ""
+// Resolution describes which config file arrctl would read and why. It is the
+// reporting form, for `config path` and `config show`; LoadFile is the
+// enforcing form.
+type Resolution struct {
+	// Path is the file that will be read, "" when there is none to read.
+	Path string
+	// Explicit records that the path came from --config or $ARRCTL_CONFIG
+	// rather than the default location.
+	Explicit bool
+	// Source names where the path came from, for error text.
+	Source string
+	// Err says why an unusable path is unusable. Only a MISSING default is
+	// silent; everything else — a named path that is absent, a directory, or
+	// any read failure that is not "no such file" — lands here.
+	Err error
 }
 
-// ResolvedConfigPath returns the path Resolve would read, or "" if none exists.
-func ResolvedConfigPath(explicit string) string { return resolveConfigPath(explicit) }
+// Found reports whether a readable config file was resolved.
+func (r Resolution) Found() bool { return r.Path != "" && r.Err == nil }
+
+// resolveConfigPath picks the config file: --config, then $ARRCTL_CONFIG, then
+// ~/.config/arrctl/config.toml. The first two are explicit and never fall
+// through to the next candidate. An empty $ARRCTL_CONFIG is unset, not a path.
+func resolveConfigPath(explicit string) Resolution {
+	if p := strings.TrimSpace(explicit); p != "" {
+		return statConfig(p, true, "--config")
+	}
+	if p := strings.TrimSpace(os.Getenv("ARRCTL_CONFIG")); p != "" {
+		return statConfig(p, true, "$ARRCTL_CONFIG")
+	}
+	p, err := DefaultConfigPath()
+	if err != nil {
+		return Resolution{Source: "the default config path"}
+	}
+	r := statConfig(p, false, "the default config path")
+	if r.Err != nil && errors.Is(r.Err, os.ErrNotExist) {
+		// The default file is allowed to be absent: every setting has a
+		// flag or environment path.
+		return Resolution{Source: r.Source}
+	}
+	return r
+}
+
+func statConfig(path string, explicit bool, source string) Resolution {
+	r := Resolution{Path: path, Explicit: explicit, Source: source}
+	st, err := os.Stat(path)
+	switch {
+	case err != nil:
+		r.Path, r.Err = "", fmt.Errorf("config file %s (from %s) cannot be used: %w", path, source, err)
+	case st.IsDir():
+		r.Path, r.Err = "", fmt.Errorf("config path %s (from %s) is a directory, not a file", path, source)
+	}
+	return r
+}
+
+// ResolvedConfigPath reports which config file would be read, whether the
+// caller named it, and why it cannot be used if it cannot.
+func ResolvedConfigPath(explicit string) Resolution { return resolveConfigPath(explicit) }
 
 // DefaultConfigPath returns ~/.config/arrctl/config.toml (does not create it).
 func DefaultConfigPath() (string, error) {

@@ -63,6 +63,18 @@ arrctl config path    # where the config and the keys are read from
 and refuses to overwrite an existing file without `--force`. `config show`
 reports where each key came from, never its value.
 
+An explicit config source is authoritative. `--config` and `$ARRCTL_CONFIG`
+name the file to use, so one that is missing, is a directory, or cannot be read
+is a `BAD_CONFIG` at exit 1 — never a silent fall back to
+`~/.config/arrctl/config.toml`, which would answer from the wrong instance and
+say nothing. Only the default file may be absent silently; every setting has a
+flag or environment path. An empty `$ARRCTL_CONFIG` counts as unset.
+
+Two commands are exempt, because they exist for exactly this failure:
+`config path` reports it in its payload — `config_found`, `config_explicit` and
+`config_error` alongside `config_in_use` — and still exits 0, and `config init
+--config /new/file.toml` writes a file that does not exist yet.
+
 `insecure = true` under an app's table skips TLS verification for that app
 alone, for an instance behind a self-signed or expired certificate. Set it per
 app so a working certificate on the other one is untouched.
