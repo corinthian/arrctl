@@ -152,10 +152,17 @@ func (a *App) emitLocal(v interface{}, terse string) error {
 func (a *App) ctx() context.Context { return context.Background() }
 
 func (a *App) do(method, path string, opts client.Options) (*client.Result, error) {
+	return a.doCtx(a.ctx(), method, path, opts)
+}
+
+// doCtx is do under a caller-supplied context, for the one caller that owns a
+// deadline of its own: the command poller, whose wait timeout has to bound each
+// poll rather than only the gap between them. Nothing else plumbs a context.
+func (a *App) doCtx(ctx context.Context, method, path string, opts client.Options) (*client.Result, error) {
 	if cerr := a.build(a.Target); cerr != nil {
 		return nil, cerr
 	}
-	res, cerr := a.Client.Do(a.ctx(), method, path, opts)
+	res, cerr := a.Client.Do(ctx, method, path, opts)
 	if cerr != nil {
 		return nil, cerr
 	}

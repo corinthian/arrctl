@@ -1,8 +1,10 @@
 package commands
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"sort"
 	"strings"
 	"time"
@@ -142,6 +144,9 @@ func (a *App) commandRun(s *appSpec) *cobra.Command {
 					"no-confirm names on "+string(s.Name)+": "+strings.Join(allowlistNames(s), ", ")+
 						"; any other name needs --confirm")
 			}
+			if cerr := validateWait(waitTimeout, waitInterval, "--wait-timeout", "--wait-interval"); cerr != nil {
+				return cerr
+			}
 			if !runAllowlist(s)[name] {
 				if cerr := a.gate("running the un-allowlisted command " + name); cerr != nil {
 					cerr.Hint = "the command-name set is not enumerated in the API document, so only " +
@@ -223,6 +228,9 @@ func (a *App) commandWaitCmd() *cobra.Command {
 		if cerr := requireID(cmd, *id); cerr != nil {
 			return cerr
 		}
+		if cerr := validateWait(timeout, interval, "--timeout", "--interval"); cerr != nil {
+			return cerr
+		}
 		res, rec, err := a.pollCommand(*id, timeout, interval)
 		if err != nil {
 			return err
@@ -255,17 +263,46 @@ func (a *App) waitAndEmit(posted json.RawMessage, timeout, interval time.Duratio
 	return a.emit(res, terseRecord(final))
 }
 
+// validateWait rejects a wait that cannot poll. A non-positive timeout or
+// interval is not "no limit": it is a wait that expires before its first poll.
+// Every caller checks it BEFORE dispatching, because reporting a usage error
+// after the POST would leave a command running with nothing watching it.
+func validateWait(timeout, interval time.Duration, timeoutFlag, intervalFlag string) *output.CLIError {
+	if timeout <= 0 {
+		return output.UsageErrorHint(timeoutFlag+" must be a positive duration; got "+timeout.String(),
+			"e.g. "+timeoutFlag+" 10m")
+	}
+	if interval <= 0 {
+		return output.UsageErrorHint(intervalFlag+" must be a positive duration; got "+interval.String(),
+			"e.g. "+intervalFlag+" 2s")
+	}
+	return nil
+}
+
 // pollCommand polls until the record reaches a terminal status or the deadline
-// passes. A timeout is TRANSPORT_TIMEOUT: the command may still be running on
-// the instance, and the message says so.
+// passes. The deadline is a context every poll GET runs under, so a slow
+// instance cannot drag the wait past it, and the inter-poll gap is a select on
+// that context rather than a bare sleep. A timeout is TRANSPORT_TIMEOUT: the
+// command may still be running on the instance, and the message says so.
+//
+// There is deliberately no deadline check before accepting a terminal status.
+// Each poll already runs under the deadline, so a response that arrives is
+// within it by definition; rejecting a genuinely finished record as a timeout
+// would throw away the outcome the caller asked for.
 func (a *App) pollCommand(id int, timeout, interval time.Duration) (*client.Result, *commandRecord, error) {
 	if interval <= 0 {
 		interval = 2 * time.Second
 	}
-	deadline := time.Now().Add(timeout)
+	ctx, cancel := context.WithDeadline(a.ctx(), time.Now().Add(timeout))
+	defer cancel()
+
+	var last *commandRecord
 	for {
-		res, err := a.get("/command/"+itoa(id), client.Options{})
+		res, err := a.doCtx(ctx, http.MethodGet, "/command/"+itoa(id), client.Options{})
 		if err != nil {
+			if ctx.Err() != nil {
+				return nil, nil, a.waitTimeoutError(id, last, timeout)
+			}
 			return nil, nil, err
 		}
 		var rec commandRecord
@@ -273,22 +310,38 @@ func (a *App) pollCommand(id int, timeout, interval time.Duration) (*client.Resu
 			return nil, nil, output.NewError(output.CodeParseError,
 				"cannot read the command record: "+uerr.Error())
 		}
+		last = &rec
 		if isTerminal(rec.Status) {
 			if commandFailed(rec.Status) {
 				return nil, nil, a.failedCommandError(&rec)
 			}
 			return res, &rec, nil
 		}
-		if time.Now().Add(interval).After(deadline) {
-			return nil, nil, &output.CLIError{
-				Code: output.CodeTransportTimeout,
-				Message: fmt.Sprintf("command %d (%s) was still %s after %s; it is still running on the instance",
-					rec.ID, rec.Name, rec.Status, timeout),
-				Hint: "poll it again with `command wait --id " + itoa(rec.ID) + "` or read it with `command get --id " + itoa(rec.ID) + "`",
-				Exit: output.ExitTransport, App: string(a.Target),
-			}
+		t := time.NewTimer(interval)
+		select {
+		case <-ctx.Done():
+			t.Stop()
+			return nil, nil, a.waitTimeoutError(id, last, timeout)
+		case <-t.C:
 		}
-		time.Sleep(interval)
+	}
+}
+
+// waitTimeoutError is the expiry error, whether the deadline fell during a poll
+// or in the gap between two.
+func (a *App) waitTimeoutError(id int, rec *commandRecord, timeout time.Duration) *output.CLIError {
+	msg := fmt.Sprintf("command %d did not reach a terminal status within %s; it is still running on the instance",
+		id, timeout)
+	if rec != nil {
+		msg = fmt.Sprintf("command %d (%s) was still %s after %s; it is still running on the instance",
+			id, rec.Name, rec.Status, timeout)
+	}
+	return &output.CLIError{
+		Code:    output.CodeTransportTimeout,
+		Message: msg,
+		Hint: "poll it again with `command wait --id " + itoa(id) +
+			"` or read it with `command get --id " + itoa(id) + "`",
+		Exit: output.ExitTransport, App: string(a.Target),
 	}
 }
 

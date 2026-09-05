@@ -9,6 +9,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/corinthian/arrctl/internal/config"
 	"github.com/corinthian/arrctl/internal/output"
@@ -709,5 +710,90 @@ func TestBadExplicitConfigIsBadConfig(t *testing.T) {
 	}
 	if cerr.Code != output.CodeBadConfig || cerr.Exit != output.ExitUser {
 		t.Errorf("code = %s exit = %d, want BAD_CONFIG / 1", cerr.Code, cerr.Exit)
+	}
+}
+
+// A wait configuration that can never poll must be caught BEFORE the command
+// is dispatched. Validating after the POST leaves a command running on the
+// instance with nothing watching it, and reports a usage error for work that
+// has already started.
+func TestWaitTimeoutValidatedBeforeDispatch(t *testing.T) {
+	cases := [][]string{
+		{"sonarr", "series", "search", "--id", "11", "--wait", "--wait-timeout", "0"},
+		{"sonarr", "series", "search", "--id", "11", "--wait", "--wait-interval", "0"},
+		{"radarr", "rss", "sync", "--confirm", "--wait", "--wait-timeout", "-1s"},
+		{"radarr", "command", "run", "--name", "MoviesSearch", "--wait", "--wait-timeout", "0"},
+		{"sonarr", "command", "wait", "--id", "1", "--timeout", "0"},
+		{"sonarr", "command", "wait", "--id", "1", "--interval", "0"},
+	}
+	for _, args := range cases {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			requests := 0
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requests++
+				fmt.Fprint(w, `{"id":1,"name":"X","status":"completed"}`)
+			}))
+			defer srv.Close()
+
+			full := append(append([]string{}, args...), "--url", srv.URL, "--apikey", "test-only")
+			_, cerr := run(t, full...)
+			if cerr == nil {
+				t.Fatal("a non-positive wait duration was accepted")
+			}
+			if cerr.Code != output.CodeBadRequest || cerr.Exit != output.ExitUser {
+				t.Errorf("code = %s exit = %d, want BAD_REQUEST / 1", cerr.Code, cerr.Exit)
+			}
+			if requests != 0 {
+				t.Errorf("%d requests were made before the rejection", requests)
+			}
+		})
+	}
+}
+
+// Each poll runs under the wait deadline, so a slow instance cannot drag the
+// wait past it: the request is cancelled, not waited out.
+func TestPollRespectsDeadline(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(700 * time.Millisecond)
+		fmt.Fprint(w, `{"id":1,"name":"SeriesSearch","status":"queued"}`)
+	}))
+	defer srv.Close()
+
+	start := time.Now()
+	_, cerr := run(t, "sonarr", "command", "wait", "--id", "1",
+		"--timeout", "100ms", "--interval", "10ms",
+		"--url", srv.URL, "--apikey", "test-only")
+	elapsed := time.Since(start)
+
+	if cerr == nil {
+		t.Fatal("the wait did not time out")
+	}
+	if cerr.Code != output.CodeTransportTimeout || cerr.Exit != output.ExitTransport {
+		t.Errorf("code = %s exit = %d, want TRANSPORT_TIMEOUT / 3", cerr.Code, cerr.Exit)
+	}
+	if elapsed > 600*time.Millisecond {
+		t.Errorf("the wait ran %s past a 100ms deadline: the poll is not under it", elapsed)
+	}
+}
+
+// A wait that expires between polls is a timeout too, and says the command is
+// still running rather than claiming an outcome it never saw.
+func TestWaitTimesOutBetweenPolls(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"id":4,"name":"SeriesSearch","status":"started"}`)
+	}))
+	defer srv.Close()
+
+	_, cerr := run(t, "sonarr", "command", "wait", "--id", "4",
+		"--timeout", "120ms", "--interval", "20ms",
+		"--url", srv.URL, "--apikey", "test-only")
+	if cerr == nil || cerr.Code != output.CodeTransportTimeout {
+		t.Fatalf("code = %+v, want TRANSPORT_TIMEOUT", cerr)
+	}
+	if !strings.Contains(cerr.Message, "still running on the instance") {
+		t.Errorf("message = %q", cerr.Message)
+	}
+	if !strings.Contains(cerr.Hint, "command wait --id 4") {
+		t.Errorf("hint = %q", cerr.Hint)
 	}
 }

@@ -23,8 +23,13 @@ func init() { Register("rss", newRSSCmd) }
 // sugarBody builds the {name, ...} body for a sugar verb.
 type sugarBody map[string]interface{}
 
-// dispatch posts a command body and optionally waits for it.
+// dispatch posts a command body and optionally waits for it. The wait
+// configuration is validated first, before anything is dispatched: a command
+// posted under a wait that cannot poll is one running with nothing watching it.
 func (a *App) dispatch(body sugarBody, wait bool, timeout, interval time.Duration) error {
+	if cerr := validateWait(timeout, interval, "--wait-timeout", "--wait-interval"); cerr != nil {
+		return cerr
+	}
 	res, err := a.post("/command", client.Options{Body: body})
 	if err != nil {
 		return err
