@@ -159,7 +159,13 @@ so resolve those before calling.
 ### Search sugar
 
 Aliases over `command run`, so a caller never has to guess a payload shape.
-Each takes `--wait` to poll the command record to completion.
+Each takes `--wait` to poll the command record to a terminal status.
+
+`--wait` reports the outcome, not merely that the poll finished. `completed` is
+success at exit 0; `failed`, `aborted` and `cancelled` are `ARR_ERROR` at exit 2,
+with the record's name, id, status and message in the error message and a hint
+pointing at `command get --id N`. There is no `http_status`, because the HTTP
+call itself returned 200. The same applies to `command wait`.
 
 | Sugar | Body |
 |---|---|

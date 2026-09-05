@@ -75,8 +75,12 @@ Booleans take a value: `--monitored true`, never a bare `--monitored`.
 arrctl radarr movie search --id N --wait
 arrctl sonarr season search --id N --season S --wait
 ```
-`--wait` polls to `completed` and the record's `message` says how many reports
-were downloaded. That message is the honest answer to "did it get anything".
+`--wait` polls to a terminal status and reports the outcome. On `completed` the
+record's `message` says how many reports were downloaded — that message is the
+honest answer to "did it get anything". A command that ends `failed`, `aborted`
+or `cancelled` comes back as `ARR_ERROR` at exit 2, carrying the name, id,
+status and message; read the whole record with `command get --id N`. Never tell
+the user a search succeeded on the strength of the poll returning.
 
 **Choose a release yourself:**
 ```sh

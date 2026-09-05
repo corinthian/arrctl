@@ -3,6 +3,9 @@ package commands
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
@@ -503,5 +506,82 @@ func TestGroupRegistrationPerApp(t *testing.T) {
 		if findChild(findChild(root, "radarr"), name) != nil {
 			t.Errorf("radarr wrongly has group %s", name)
 		}
+	}
+}
+
+// A command that reaches a terminal FAILED state is a failure, not a success:
+// `--wait` exists to report the outcome, and reporting exit 0 for a search that
+// failed is the worst possible answer for an unattended caller. The record is
+// preserved in the message so the caller need not re-read it.
+func TestWaitOnFailedCommandIsArrError(t *testing.T) {
+	for _, status := range []string{"failed", "aborted", "cancelled"} {
+		t.Run(status, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				fmt.Fprintf(w, `{"id":1,"name":"SeriesSearch","status":%q,"message":"indexer unavailable"}`, status)
+			}))
+			defer srv.Close()
+
+			_, cerr := run(t, "sonarr", "command", "wait", "--id", "1",
+				"--url", srv.URL, "--apikey", "test-only")
+			if cerr == nil {
+				t.Fatalf("a %s command reported success", status)
+			}
+			if cerr.Code != output.CodeArrError {
+				t.Errorf("code = %s, want ARR_ERROR", cerr.Code)
+			}
+			if cerr.Exit != output.ExitArr {
+				t.Errorf("exit = %d, want 2", cerr.Exit)
+			}
+			if cerr.HTTPStatus != 0 {
+				t.Errorf("http_status = %d, want it omitted: the HTTP call returned 200", cerr.HTTPStatus)
+			}
+			for _, want := range []string{"SeriesSearch", "#1", status, "indexer unavailable"} {
+				if !strings.Contains(cerr.Message, want) {
+					t.Errorf("message %q does not carry %q", cerr.Message, want)
+				}
+			}
+			if !strings.Contains(cerr.Hint, "command get --id 1") {
+				t.Errorf("hint %q does not point at the record", cerr.Hint)
+			}
+		})
+	}
+}
+
+// waitAndEmit is a separate wrapper around pollCommand, so the sugar's --wait
+// needs its own case: the fix has to reach both paths.
+func TestSugarWaitOnFailedCommandIsArrError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			fmt.Fprint(w, `{"id":7,"name":"SeriesSearch","status":"queued"}`)
+			return
+		}
+		fmt.Fprint(w, `{"id":7,"name":"SeriesSearch","status":"failed","message":"no results"}`)
+	}))
+	defer srv.Close()
+
+	_, cerr := run(t, "sonarr", "series", "search", "--id", "11", "--wait",
+		"--url", srv.URL, "--apikey", "test-only")
+	if cerr == nil {
+		t.Fatal("a failed search reported success through the sugar's --wait")
+	}
+	if cerr.Code != output.CodeArrError || cerr.Exit != output.ExitArr {
+		t.Errorf("code = %s exit = %d, want ARR_ERROR / 2", cerr.Code, cerr.Exit)
+	}
+}
+
+// `completed` is unchanged: it is the one terminal status that means success.
+func TestWaitOnCompletedCommandStaysSuccess(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"id":1,"name":"SeriesSearch","status":"completed","message":"1 report downloaded"}`)
+	}))
+	defer srv.Close()
+
+	out, cerr := run(t, "sonarr", "command", "wait", "--id", "1",
+		"--url", srv.URL, "--apikey", "test-only")
+	if cerr != nil {
+		t.Fatalf("a completed command was reported as a failure: %+v", cerr)
+	}
+	if !strings.Contains(out, "completed") {
+		t.Errorf("output does not carry the record: %s", out)
 	}
 }

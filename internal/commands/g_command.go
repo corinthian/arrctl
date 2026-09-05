@@ -41,6 +41,40 @@ func isTerminal(status string) bool {
 	return false
 }
 
+// commandFailed reports whether a terminal status is a failure. `completed` is
+// the only terminal status that means the command did what it was asked; the
+// other three are outcomes a caller must not read as success, because --wait
+// exists precisely to report the outcome.
+func commandFailed(status string) bool {
+	switch strings.ToLower(status) {
+	case statusFailed, statusAborted, statusCancelled:
+		return true
+	}
+	return false
+}
+
+// failedCommandError renders a terminal failure as ARR_ERROR at exit 2. No new
+// code: the code set is closed, and the exit class is the same either way.
+// http_status is omitted because the HTTP call itself returned 200. The record
+// is preserved in the message so a caller need not re-read it to find out what
+// happened.
+func (a *App) failedCommandError(rec *commandRecord) *output.CLIError {
+	msg := fmt.Sprintf("%s #%d finished %s", rec.Name, rec.ID, rec.Status)
+	switch {
+	case rec.Message != "":
+		msg += ": " + rec.Message
+	case rec.Result != "":
+		msg += ": " + rec.Result
+	}
+	return &output.CLIError{
+		Code:    output.CodeArrError,
+		Message: msg,
+		Hint:    "read the record with `command get --id " + itoa(rec.ID) + "`",
+		Exit:    output.ExitForCode(output.CodeArrError),
+		App:     string(a.Target),
+	}
+}
+
 // runAllowlist is the set of command names `command run` accepts without
 // --confirm. Everything else is confirm-required, because neither OpenAPI
 // document enumerates the command-name set: an unrecognised name could be
@@ -240,6 +274,9 @@ func (a *App) pollCommand(id int, timeout, interval time.Duration) (*client.Resu
 				"cannot read the command record: "+uerr.Error())
 		}
 		if isTerminal(rec.Status) {
+			if commandFailed(rec.Status) {
+				return nil, nil, a.failedCommandError(&rec)
+			}
 			return res, &rec, nil
 		}
 		if time.Now().Add(interval).After(deadline) {
