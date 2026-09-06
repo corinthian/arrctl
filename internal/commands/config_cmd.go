@@ -1,8 +1,11 @@
 package commands
 
 import (
+	"strconv"
+
 	"github.com/corinthian/arrctl/internal/config"
 	"github.com/corinthian/arrctl/internal/output"
+	"github.com/corinthian/arrctl/internal/xduration"
 	"github.com/spf13/cobra"
 )
 
@@ -18,7 +21,8 @@ func newConfigCmd(app *App) *cobra.Command {
 // configInit writes config.toml. It holds URLs only: an API key is never
 // written, whatever the caller passes.
 func (a *App) configInit() *cobra.Command {
-	var radarrURL, sonarrURL, timeout string
+	var radarrURL, sonarrURL string
+	var timeoutDefault int
 	var sonarrInsecure, radarrInsecure, force bool
 	c := &cobra.Command{
 		Use:         "init",
@@ -36,7 +40,12 @@ func (a *App) configInit() *cobra.Command {
 			f.Radarr.Insecure = radarrInsecure
 			f.Sonarr.URL = sonarrURL
 			f.Sonarr.Insecure = sonarrInsecure
-			f.Defaults.Timeout = timeout
+			if cmd.Flags().Changed("timeout-default") {
+				if _, err := xduration.Parse(strconv.Itoa(timeoutDefault), "--timeout-default"); err != nil {
+					return output.NewError(output.CodeBadRequest, err.Error())
+				}
+				f.Defaults.Timeout = &timeoutDefault
+			}
 
 			path := a.Flags.ConfigPath
 			if path == "" {
@@ -61,7 +70,7 @@ func (a *App) configInit() *cobra.Command {
 	c.Flags().StringVar(&sonarrURL, "sonarr-url", "", "Sonarr base URL")
 	c.Flags().BoolVar(&radarrInsecure, "radarr-insecure", false, "skip TLS verification for Radarr")
 	c.Flags().BoolVar(&sonarrInsecure, "sonarr-insecure", false, "skip TLS verification for Sonarr")
-	c.Flags().StringVar(&timeout, "timeout-default", "", "default HTTP timeout, e.g. 30s")
+	c.Flags().IntVar(&timeoutDefault, "timeout-default", 0, "default HTTP timeout in whole seconds, 1-86400")
 	c.Flags().BoolVar(&force, "force", false, "overwrite an existing config")
 	return c
 }
@@ -82,7 +91,7 @@ func (a *App) configShow() *cobra.Command {
 				cfg, err := config.Resolve(app, config.Flags{
 					URL: a.Flags.URL, APIKey: a.Flags.APIKey,
 					Insecure: a.Flags.Insecure, InsecureSet: a.insecureSet,
-					Timeout: a.Flags.Timeout, ConfigPath: a.Flags.ConfigPath,
+					Timeout: a.Flags.Timeout, TimeoutSet: a.timeoutSet, ConfigPath: a.Flags.ConfigPath,
 				}, a.Loaded)
 				if err != nil {
 					row["error"] = err.Error()

@@ -9,6 +9,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"os"
@@ -17,6 +18,7 @@ import (
 	"github.com/corinthian/arrctl/internal/client"
 	"github.com/corinthian/arrctl/internal/config"
 	"github.com/corinthian/arrctl/internal/output"
+	"github.com/corinthian/arrctl/internal/xduration"
 	"github.com/corinthian/arrctl/internal/xhttp"
 )
 
@@ -62,6 +64,12 @@ type App struct {
 	// config file, silently re-enabling TLS verification against an instance
 	// whose certificate is known-bad.
 	insecureSet bool
+
+	// timeoutSet records whether --timeout was actually typed (cmd.Flags().
+	// Changed("timeout")). Without it an explicitly empty --timeout "" is
+	// indistinguishable from an untouched flag, and the empty value must be an
+	// error rather than falling through to env or file.
+	timeoutSet bool
 }
 
 // NewApp builds an App with a default JSON writer; build() finishes setup in
@@ -89,11 +97,12 @@ func (a *App) build(target config.App) *output.CLIError {
 		Insecure:    a.Flags.Insecure,
 		InsecureSet: a.insecureSet,
 		Timeout:     a.Flags.Timeout,
+		TimeoutSet:  a.timeoutSet,
 		ConfigPath:  a.Flags.ConfigPath,
 	}
 	cfg, err := config.Resolve(target, f, a.Loaded)
 	if err != nil {
-		return output.NewError(output.CodeBadConfig, err.Error())
+		return output.NewError(configErrorCode(err), err.Error())
 	}
 	a.Cfg = cfg
 	a.Client = client.New(client.Config{
@@ -107,6 +116,18 @@ func (a *App) build(target config.App) *output.CLIError {
 		KeyHint:   target.KeyHint(),
 	})
 	return nil
+}
+
+// configErrorCode maps a config.Resolve error to its exit-code family. A
+// rejected --timeout is the caller's usage mistake, BAD_REQUEST; a rejected
+// $ARRCTL_TIMEOUT or config-file timeout is a config problem, BAD_CONFIG, like
+// every other config.Resolve failure.
+func configErrorCode(err error) string {
+	var de *xduration.Error
+	if errors.As(err, &de) && de.Source == "--timeout" {
+		return output.CodeBadRequest
+	}
+	return output.CodeBadConfig
 }
 
 func (a *App) resolveFormat() output.Format {

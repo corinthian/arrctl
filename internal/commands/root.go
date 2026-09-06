@@ -34,6 +34,11 @@ func NewRoot() (*cobra.Command, *App) {
 			}
 			app.Out.Format = app.resolveFormat()
 			app.insecureSet = cmd.Flags().Changed("insecure")
+			// pf, not cmd.Flags(): a subcommand (command wait) shadows this
+			// name with its own local --timeout, a polling deadline in Go
+			// duration syntax. cmd.Flags().Changed would merge the two and
+			// misreport the shadowed local flag as the global one.
+			app.timeoutSet = cmd.Root().PersistentFlags().Changed("timeout")
 
 			if !client.ValidKeyPlacement(g.APIKeyIn) {
 				return output.UsageErrorHint(
@@ -76,7 +81,7 @@ func NewRoot() (*cobra.Command, *App) {
 	pf.StringVar(&g.URL, "url", "", "instance base URL (overrides env/config)")
 	pf.StringVar(&g.APIKey, "apikey", "", "API key (overrides env/config/Keychain)")
 	pf.BoolVar(&g.Insecure, "insecure", false, "skip TLS verification for this app")
-	pf.StringVar(&g.Timeout, "timeout", "", "HTTP timeout, e.g. 30s (default 30s)")
+	pf.StringVar(&g.Timeout, "timeout", "", "HTTP timeout in whole seconds, 1-86400 (default 30)")
 	pf.StringVar(&g.ConfigPath, "config", "", "path to config.toml")
 	pf.StringVar(&g.APIKeyIn, "apikey-in", "header", "where to place the API key: header|query")
 

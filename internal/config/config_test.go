@@ -42,7 +42,7 @@ url = "https://sonarr.example"
 insecure = true
 
 [defaults]
-timeout = "45s"
+timeout = 45
 `
 
 // The file supplies the URL, the Keychain supplies the key: the documented
@@ -400,5 +400,117 @@ func TestReverseProxyPathBaseIsAllowed(t *testing.T) {
 	}
 	if c.URL != "http://host/radarr" {
 		t.Errorf("url = %q", c.URL)
+	}
+}
+
+// The --timeout flag, once explicitly set, is authoritative: an invalid value
+// is always an error naming --timeout, whether it is a duration string, an
+// out-of-range integer, or an explicitly empty value. Env and file are never
+// consulted to rescue it.
+func TestResolveTimeoutFlagInvalidIsBadRequest(t *testing.T) {
+	stubKeychain(t, map[string]string{"radarrctl/apikey": "K"})
+	for _, v := range []string{"30s", "abc", "0", "-5", "90000", "", " 30 "} {
+		_, err := Resolve(Radarr, Flags{TimeoutSet: true, Timeout: v}, &Loaded{})
+		if err == nil {
+			t.Errorf("--timeout %q: accepted, want an error", v)
+			continue
+		}
+		if !strings.Contains(err.Error(), "--timeout") {
+			t.Errorf("--timeout %q: error %q does not name --timeout", v, err.Error())
+		}
+	}
+}
+
+// An invalid $ARRCTL_TIMEOUT is an error naming the env var; an empty value is
+// unset and falls through.
+func TestResolveTimeoutEnvInvalidNamesEnv(t *testing.T) {
+	stubKeychain(t, map[string]string{"radarrctl/apikey": "K"})
+	t.Setenv("ARRCTL_TIMEOUT", "abc")
+	_, err := Resolve(Radarr, Flags{}, &Loaded{})
+	if err == nil || !strings.Contains(err.Error(), "$ARRCTL_TIMEOUT") {
+		t.Fatalf("invalid $ARRCTL_TIMEOUT: got %v, want an error naming $ARRCTL_TIMEOUT", err)
+	}
+
+	t.Setenv("ARRCTL_TIMEOUT", "")
+	c, err := Resolve(Radarr, Flags{URL: "http://host.example"}, &Loaded{})
+	if err != nil {
+		t.Fatalf("empty $ARRCTL_TIMEOUT should be treated as unset: %v", err)
+	}
+	if c.Timeout != DefaultTimeout {
+		t.Errorf("timeout = %s, want the default %s", c.Timeout, DefaultTimeout)
+	}
+}
+
+// A rejected file value names "config timeout (<path>)".
+func TestResolveTimeoutFileInvalidNamesConfigTimeout(t *testing.T) {
+	stubKeychain(t, map[string]string{"radarrctl/apikey": "K"})
+	path := writeConfig(t, "[defaults]\ntimeout = 90000\n")
+	l, err := LoadFile(path, false)
+	if err != nil {
+		t.Fatalf("LoadFile: %v", err)
+	}
+	_, err = Resolve(Radarr, Flags{}, l)
+	if err == nil {
+		t.Fatal("out-of-range file timeout accepted")
+	}
+	want := "config timeout (" + path + ")"
+	if !strings.Contains(err.Error(), want) {
+		t.Errorf("error %q does not contain %q", err.Error(), want)
+	}
+}
+
+// The higher-priority flag wins even when it is invalid: a valid file value
+// never rescues it.
+func TestInvalidFlagBeatsValidFile(t *testing.T) {
+	stubKeychain(t, map[string]string{"radarrctl/apikey": "K"})
+	path := writeConfig(t, "[defaults]\ntimeout = 30\n")
+	l, err := LoadFile(path, false)
+	if err != nil {
+		t.Fatalf("LoadFile: %v", err)
+	}
+	_, err = Resolve(Radarr, Flags{TimeoutSet: true, Timeout: "abc"}, l)
+	if err == nil {
+		t.Fatal("invalid --timeout was rescued by a valid file value")
+	}
+}
+
+// A TOML timeout that is not an integer is BAD_CONFIG naming "config timeout
+// (<path>)", never a bare go-toml type-mismatch message.
+func TestTOMLTimeoutStringIsBadConfig(t *testing.T) {
+	for _, body := range []string{
+		"[defaults]\ntimeout = \"30s\"\n",
+		"[defaults]\ntimeout = \"30\"\n",
+		"[defaults]\ntimeout = 30.0\n",
+		"[defaults]\ntimeout = true\n",
+		"[defaults]\ntimeout = [1, 2]\n",
+		"[defaults]\ntimeout = { a = 1 }\n",
+	} {
+		path := writeConfig(t, body)
+		_, err := LoadFile(path, false)
+		if err == nil {
+			t.Errorf("body %q: accepted, want an error", body)
+			continue
+		}
+		want := "config timeout (" + path + ")"
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("body %q: error %q does not contain %q", body, err.Error(), want)
+		}
+	}
+}
+
+// The only accepted file form is a bare TOML integer.
+func TestTOMLTimeoutIntegerAccepted(t *testing.T) {
+	stubKeychain(t, map[string]string{"radarrctl/apikey": "K"})
+	path := writeConfig(t, "[radarr]\nurl = \"http://host.example\"\n\n[defaults]\ntimeout = 30\n")
+	l, err := LoadFile(path, false)
+	if err != nil {
+		t.Fatalf("LoadFile: %v", err)
+	}
+	c, err := Resolve(Radarr, Flags{}, l)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if c.Timeout != 30*time.Second {
+		t.Errorf("timeout = %s, want 30s", c.Timeout)
 	}
 }

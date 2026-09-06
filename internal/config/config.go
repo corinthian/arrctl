@@ -10,10 +10,12 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/corinthian/arrctl/internal/configpath"
+	"github.com/corinthian/arrctl/internal/xduration"
 	toml "github.com/pelletier/go-toml/v2"
 	"github.com/zalando/go-keyring"
 )
@@ -60,9 +62,11 @@ type fileApp struct {
 	Insecure bool   `toml:"insecure,omitempty"`
 }
 
-// fileDefaults is the on-disk `[defaults]` table.
+// fileDefaults is the on-disk `[defaults]` table. Timeout is a whole number of
+// seconds, per xduration's grammar; nil means the key is absent, which is
+// distinct from an (invalid) explicit zero.
 type fileDefaults struct {
-	Timeout string `toml:"timeout,omitempty"`
+	Timeout *int `toml:"timeout,omitempty"`
 }
 
 // File is the whole config.toml.
@@ -86,6 +90,7 @@ type Flags struct {
 	Insecure    bool
 	InsecureSet bool
 	Timeout     string
+	TimeoutSet  bool
 	ConfigPath  string
 }
 
@@ -133,6 +138,14 @@ func LoadFile(explicit string, tolerate bool) (*Loaded, error) {
 		// question about where to look; a file it read and could not
 		// understand is a question about what is in it, and no command has
 		// a reason to carry on with settings it demonstrably misread.
+		var de *toml.DecodeError
+		if errors.As(err, &de) {
+			key := de.Key()
+			if len(key) > 0 && key[len(key)-1] == "timeout" {
+				return nil, fmt.Errorf("config timeout (%s) must be a whole number of seconds, "+
+					"with no quotes, decimal point or unit suffix: %w", r.Path, err)
+			}
+		}
 		return nil, fmt.Errorf("parsing %s: %w", r.Path, err)
 	}
 	l.Source = r.Path
@@ -196,7 +209,11 @@ func Resolve(a App, f Flags, l *Loaded) (*AppConfig, error) {
 		}
 	}
 
-	c.Timeout = resolveTimeout(f.Timeout, l.File.Defaults.Timeout)
+	d, err := resolveTimeout(f.TimeoutSet, f.Timeout, l.Source, l.File.Defaults.Timeout)
+	if err != nil {
+		return nil, err
+	}
+	c.Timeout = d
 
 	if c.URL == "" {
 		return nil, fmt.Errorf("no url for %s; set --url, %sURL, or [%s] url in %s",
@@ -216,16 +233,24 @@ func (a App) KeyHint() string {
 		" -a " + KeychainAccount + " -w <key> -U"
 }
 
-func resolveTimeout(flag, file string) time.Duration {
-	for _, s := range []string{flag, os.Getenv("ARRCTL_TIMEOUT"), file} {
-		if s == "" {
-			continue
-		}
-		if d, err := time.ParseDuration(s); err == nil && d > 0 {
-			return d
-		}
+// resolveTimeout resolves the global HTTP timeout. When the --timeout flag was
+// explicitly set (flagSet, from cmd.Flags().Changed("timeout")), it is
+// authoritative and parsed directly — an explicitly empty flag value is a
+// mistake, not an unset source, so it must not fall through to env or file.
+// Otherwise resolution walks $ARRCTL_TIMEOUT then the config file's `timeout`,
+// via xduration.Resolve, which skips any candidate whose value is empty.
+func resolveTimeout(flagSet bool, flag, path string, fileTimeout *int) (time.Duration, error) {
+	if flagSet {
+		return xduration.Parse(flag, "--timeout")
 	}
-	return DefaultTimeout
+	fileValue := ""
+	if fileTimeout != nil {
+		fileValue = strconv.Itoa(*fileTimeout)
+	}
+	return xduration.Resolve(DefaultTimeout,
+		xduration.Candidate{Source: "$ARRCTL_TIMEOUT", Value: os.Getenv("ARRCTL_TIMEOUT")},
+		xduration.Candidate{Source: "config timeout (" + path + ")", Value: fileValue},
+	)
 }
 
 func truthy(v string) bool {

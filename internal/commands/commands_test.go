@@ -970,3 +970,81 @@ func TestPayloadMustBeAnObjectForCommandRun(t *testing.T) {
 		t.Errorf("code = %s, want BAD_REQUEST", cerr.Code)
 	}
 }
+
+// `config init --timeout-default` writes a bare integer key, never accepts Go
+// duration syntax, and omits the key entirely when the flag is not passed.
+func TestConfigInitTimeoutDefaultIsInteger(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	_, cerr := run(t, "config", "init", "--config", path,
+		"--radarr-url", "http://127.0.0.1:7878", "--timeout-default", "45")
+	if cerr != nil {
+		t.Fatalf("config init --timeout-default 45: %+v", cerr)
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), "timeout = 45") {
+		t.Errorf("config does not contain 'timeout = 45':\n%s", b)
+	}
+
+	path2 := filepath.Join(dir, "config2.toml")
+	_, cerr = run(t, "config", "init", "--config", path2,
+		"--radarr-url", "http://127.0.0.1:7878", "--timeout-default", "45s")
+	if cerr == nil {
+		t.Fatal("--timeout-default 45s was accepted; it must be a bare integer")
+	}
+	if cerr.Code != output.CodeBadRequest {
+		t.Errorf("code = %s, want BAD_REQUEST", cerr.Code)
+	}
+
+	path3 := filepath.Join(dir, "config3.toml")
+	_, cerr = run(t, "config", "init", "--config", path3, "--radarr-url", "http://127.0.0.1:7878")
+	if cerr != nil {
+		t.Fatalf("config init without --timeout-default: %+v", cerr)
+	}
+	b, err = os.ReadFile(path3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(b), "timeout") {
+		t.Errorf("omitted --timeout-default still wrote a timeout key:\n%s", b)
+	}
+}
+
+// The timeout error code depends on which source rejected it: --timeout is a
+// usage mistake, BAD_REQUEST; $ARRCTL_TIMEOUT and the config file are config
+// problems, BAD_CONFIG.
+func TestTimeoutErrorCodeBySource(t *testing.T) {
+	_, cerr := run(t, "radarr", "system", "status", "--timeout", "abc",
+		"--url", "http://127.0.0.1:1", "--apikey", "x")
+	if cerr == nil || cerr.Code != output.CodeBadRequest || cerr.Exit != output.ExitUser {
+		t.Errorf("--timeout abc: code = %+v, want BAD_REQUEST / 1", cerr)
+	}
+
+	t.Setenv("ARRCTL_TIMEOUT", "abc")
+	_, cerr = run(t, "radarr", "system", "status",
+		"--url", "http://127.0.0.1:1", "--apikey", "x")
+	if cerr == nil || cerr.Code != output.CodeBadConfig || cerr.Exit != output.ExitUser {
+		t.Errorf("$ARRCTL_TIMEOUT=abc: code = %+v, want BAD_CONFIG / 1", cerr)
+	}
+	t.Setenv("ARRCTL_TIMEOUT", "")
+
+	bad := writeConfigTOML(t, "[defaults]\ntimeout = \"30s\"\n")
+	_, cerr = run(t, "radarr", "system", "status", "--config", bad,
+		"--url", "http://127.0.0.1:1", "--apikey", "x")
+	if cerr == nil || cerr.Code != output.CodeBadConfig || cerr.Exit != output.ExitUser {
+		t.Errorf("config timeout = \"30s\": code = %+v, want BAD_CONFIG / 1", cerr)
+	}
+}
+
+// writeConfigTOML writes body to a fresh config.toml and returns its path.
+func writeConfigTOML(t *testing.T, body string) string {
+	t.Helper()
+	p := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}

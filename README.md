@@ -86,6 +86,18 @@ parse, so a config with a typo in it is reported rather than replaced.
 alone, for an instance behind a self-signed or expired certificate. Set it per
 app so a working certificate on the other one is untouched.
 
+`--timeout`, `$ARRCTL_TIMEOUT` and `timeout` in the file all take a whole
+number of seconds, 1 to 86400 — no unit suffix, no decimal point, no
+whitespace. Anything else is an error naming which source was wrong:
+`--timeout` is `BAD_REQUEST`, the env var and the file are `BAD_CONFIG`. A
+config file holding `timeout = "30s"` must be edited to `timeout = 30`. The
+first source that is present wins outright: an invalid `--timeout` is never
+rescued by a valid `$ARRCTL_TIMEOUT` or file value.
+
+`command wait --timeout` and the sugar verbs' `--wait-timeout` are polling
+deadlines and keep Go duration syntax (`10m`); the global `--timeout` is
+integer seconds.
+
 ## Output
 
 Every command emits the same envelope on stdout:

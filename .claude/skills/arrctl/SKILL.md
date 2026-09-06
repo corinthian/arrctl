@@ -127,6 +127,9 @@ as JSON. Read those instead of guessing.
 - A config file that will not parse is a `BAD_CONFIG` at exit 1 for every
   command, `config path` and `config init` included. Only a bad *path* is
   tolerated. Say the file has a syntax error and name it; do not retry.
+- `--timeout` takes seconds as a whole number (`--timeout 30`, not `30s`).
+  `command wait --timeout` is a different flag that takes Go duration syntax
+  (`10m`).
 
 ## What this skill does not do
 
