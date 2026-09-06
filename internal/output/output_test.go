@@ -23,7 +23,9 @@ func TestCodeExitMap(t *testing.T) {
 		CodeTransportTLS:      ExitTransport,
 		CodeTransportTimeout:  ExitTransport,
 		CodeTransportRefused:  ExitTransport,
+		CodeTransportFailed:   ExitTransport,
 		CodeParseError:        ExitInternal,
+		CodeDecodeError:       ExitInternal,
 	}
 	for code, exp := range want {
 		if got := ExitForCode(code); got != exp {

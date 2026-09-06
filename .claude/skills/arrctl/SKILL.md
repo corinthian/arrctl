@@ -38,10 +38,13 @@ message, hint}}`. Translate them; never paste raw JSON at the user.
 | 1 | you asked for something the tool won't do as typed — read `error.hint` |
 | 2 | the app refused — 401 means the key, 404 means it is not in the library |
 | 3 | could not reach the instance — name which one |
-| 4 | arrctl bug; report it |
+| 4 | arrctl bug, or the instance sent a response arrctl could not decode |
 
 `ARR_AUTH_FAILED` carries the exact `security add-generic-password` line in its
 hint. Show that line; it is the fix.
+
+A `DECODE_ERROR` means the instance sent something that is not the JSON it
+promised, or a response over the size bound — report it, do not retry.
 
 Add `--terse` when you only need a one-liner. Use `jq` on the JSON for
 anything you have to reason about.

@@ -145,12 +145,14 @@ Errors go to stdout in the same envelope. stderr stays unused.
 | 1 | User error: bad flags, missing args, invalid config, confirm gate refused |
 | 2 | The app returned non-2xx |
 | 3 | Transport: DNS, TLS, timeout, refused |
-| 4 | Internal arrctl error |
+| 4 | internal arrctl error, or a response from the instance arrctl could not decode |
 
 Codes, closed set: `BAD_CONFIG`, `BAD_REQUEST`, `CONFIRM_REQUIRED`,
 `ARR_AUTH_FAILED`, `ARR_VALIDATION`, `ARR_NOT_FOUND`, `ARR_ERROR`,
 `TRANSPORT_DNS`, `TRANSPORT_TLS`, `TRANSPORT_TIMEOUT`, `TRANSPORT_REFUSED`,
-`PARSE_ERROR`, `PAGINATION_RUNAWAY`. One `ARR_` prefix covers both apps;
+`TRANSPORT_FAILED`, `PARSE_ERROR`, `DECODE_ERROR`, `PAGINATION_RUNAWAY`.
+`PARSE_ERROR` is caller input and internal marshal failures; a response body
+arrctl could not decode is `DECODE_ERROR`. One `ARR_` prefix covers both apps;
 `meta.app` says which one answered. A single code-to-exit map is the only place
 exit numbers live.
 

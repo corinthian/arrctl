@@ -21,7 +21,7 @@ const (
 	ExitUser      ExitCode = 1 // bad flags, missing args, invalid config, confirm refused
 	ExitArr       ExitCode = 2 // Radarr/Sonarr returned non-2xx
 	ExitTransport ExitCode = 3 // DNS, TLS, timeout, refused
-	ExitInternal  ExitCode = 4 // internal arrctl error
+	ExitInternal  ExitCode = 4 // internal arrctl error, or a response from the instance arrctl could not decode
 )
 
 // Error-code enum values (the error envelope's `code` field). Closed set.
@@ -46,8 +46,14 @@ const (
 	CodeTransportTLS     = "TRANSPORT_TLS"
 	CodeTransportTimeout = "TRANSPORT_TIMEOUT"
 	CodeTransportRefused = "TRANSPORT_REFUSED"
+	CodeTransportFailed  = "TRANSPORT_FAILED"
 
-	CodeParseError        = "PARSE_ERROR"
+	// CodeParseError is caller input and internal marshal failures. Never a
+	// response body — see CodeDecodeError.
+	CodeParseError = "PARSE_ERROR"
+	// CodeDecodeError fires when the instance sends malformed JSON or an
+	// oversize body.
+	CodeDecodeError       = "DECODE_ERROR"
 	CodePaginationRunaway = "PAGINATION_RUNAWAY"
 )
 
@@ -70,8 +76,10 @@ var codeExit = map[string]ExitCode{
 	CodeTransportTLS:     ExitTransport,
 	CodeTransportTimeout: ExitTransport,
 	CodeTransportRefused: ExitTransport,
+	CodeTransportFailed:  ExitTransport,
 
-	CodeParseError: ExitInternal,
+	CodeParseError:  ExitInternal,
+	CodeDecodeError: ExitInternal,
 }
 
 // ExitForCode returns the exit class an error code maps to. Unknown codes are
