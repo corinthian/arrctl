@@ -1,0 +1,34 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.26"
+          # Resolve the newest 1.26.x instead of the exact patch in go.mod —
+          # govulncheck fails the build when the installed stdlib carries a fixed
+          # CVE (first hit: GO-2026-6218 et al., fixed in 1.26.6).
+          check-latest: true
+      - run: go build ./...
+      - run: go vet ./...
+      - name: gofmt
+        run: |
+          fmt_out="$(gofmt -l internal cmd)"
+          if [ -n "$fmt_out" ]; then
+            echo "$fmt_out"
+            exit 1
+          fi
+      - run: go test ./...
+      - run: go test -race ./...
+      - name: govulncheck
+        run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
