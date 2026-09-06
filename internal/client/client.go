@@ -31,10 +31,11 @@ const APIPrefix = "/api/v3"
 // PageCap is the --all runaway guard.
 const PageCap = 100
 
-// BodyLimit bounds a single response body. Provisional default, per contract
-// 2.3: Richard has not measured a real Radarr/Sonarr instance's largest
-// response, so this is the 64 MiB floor rather than four times an observed
-// value.
+// BodyLimit bounds a single response body. Contract 2.3 sets it to four times
+// the largest observed response or 64 MiB, whichever is greater. Measured
+// 2026-09-06 on the wire: Radarr full movie list 991,964 bytes, Sonarr full
+// series list 290,060 bytes. Four times either is under 4 MiB, so the floor
+// applies.
 const BodyLimit int64 = 64 << 20
 
 // KeyPlacement selects where the API key is sent.
