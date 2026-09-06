@@ -106,7 +106,8 @@ Every command emits the same envelope on stdout:
 `meta.app` is always present, so a caller can tell the two instances apart from
 the output alone.
 
-- `--raw` emits the app's response body untouched
+- `--raw` emits the app's response body untouched — indented on the bytes, so
+  the instance's key order and its number literals both survive verbatim
 - `--ndjson` emits one object per line (a paged body is unwrapped to its records)
 - `--terse` emits one plain-English line, the only human formatter
 - `--llm` on any command emits its flags, argument shapes, output schema and

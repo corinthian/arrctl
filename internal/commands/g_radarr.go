@@ -1,12 +1,12 @@
 package commands
 
 import (
-	"encoding/json"
 	"net/http"
 
 	"github.com/corinthian/arrctl/internal/client"
 	"github.com/corinthian/arrctl/internal/config"
 	"github.com/corinthian/arrctl/internal/output"
+	"github.com/corinthian/arrctl/internal/rawjson"
 	"github.com/spf13/cobra"
 )
 
@@ -78,22 +78,24 @@ func (a *App) resourceUpdate(s *appSpec) *cobra.Command {
 		if err != nil {
 			return err
 		}
-		patchMap, ok := patch.(map[string]interface{})
-		if !ok {
-			return output.UsageError("--payload must be a JSON object for `update`")
+		patchMap, perr := payloadObject(patch, "--payload must be a JSON object for `update`")
+		if perr != nil {
+			return perr
 		}
 
 		cur, gerr := a.get(s.ResourcePath+"/"+itoa(*id), client.Options{})
 		if gerr != nil {
 			return gerr
 		}
-		var base map[string]interface{}
-		if uerr := json.Unmarshal(cur.Data, &base); uerr != nil {
+		// Merge on the bytes: the record round-tripping through this command
+		// keeps the instance's own key order, and every id and size in it
+		// keeps its literal value rather than passing through a float64.
+		// Top-level keys only, as before — a nested object in the patch
+		// replaces the record's wholesale.
+		base, uerr := rawjson.MergeObjects(cur.Data, patchMap)
+		if uerr != nil {
 			return output.NewError(output.CodeParseError,
 				"cannot read the current "+s.Noun+" record to merge over: "+uerr.Error())
-		}
-		for k, v := range patchMap {
-			base[k] = v
 		}
 
 		q := map[string][]string{}

@@ -3,6 +3,7 @@ package output
 import (
 	"bytes"
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -195,5 +196,115 @@ func TestErrorEnvelopeHasNoDataKey(t *testing.T) {
 	}
 	if _, ok := env["data"]; ok {
 		t.Errorf("an error envelope carries a data key:\n%s", buf.String())
+	}
+}
+
+// --raw is the pass-through format: what the instance sent is what the caller
+// sees, indented. A decode-and-re-encode round trip sorted the keys and pushed
+// every integer through a float64, so an id past 2^53 came back changed.
+func TestRawPreservesKeyOrderAndBigIntegers(t *testing.T) {
+	var buf bytes.Buffer
+	w := New(&buf, FormatRaw)
+	body := `{"zulu":1,"tmdbId":9007199254740993,"alpha":2}`
+	if err := w.Emit(&Result{Data: json.RawMessage(body)}); err != nil {
+		t.Fatal(err)
+	}
+	got := buf.String()
+	if !strings.Contains(got, "9007199254740993") {
+		t.Errorf("the integer was rewritten:\n%s", got)
+	}
+	z, tm, a := strings.Index(got, "zulu"), strings.Index(got, "tmdbId"), strings.Index(got, "alpha")
+	if !(z < tm && tm < a) {
+		t.Errorf("key order was not preserved:\n%s", got)
+	}
+}
+
+func TestNDJSONPreservesBigIntegers(t *testing.T) {
+	var buf bytes.Buffer
+	w := New(&buf, FormatNDJSON)
+	if err := w.Emit(&Result{Data: json.RawMessage(`[{"id":9007199254740993},{"id":9007199254740994}]`)}); err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimRight(buf.String(), "\n"), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("got %d lines:\n%s", len(lines), buf.String())
+	}
+	if lines[0] != `{"id":9007199254740993}` || lines[1] != `{"id":9007199254740994}` {
+		t.Errorf("rows were rewritten:\n%s", buf.String())
+	}
+}
+
+// A Servarr paged body splits on its `records` array, not on the envelope, so
+// --ndjson reads the same on a paged and an unpaged list.
+func TestNDJSONUnwrapsPagedRecords(t *testing.T) {
+	var buf bytes.Buffer
+	w := New(&buf, FormatNDJSON)
+	body := `{"page":1,"pageSize":2,"totalRecords":2,"records":[{"id":1},{"id":2}]}`
+	if err := w.Emit(&Result{Data: json.RawMessage(body)}); err != nil {
+		t.Fatal(err)
+	}
+	got := strings.TrimRight(buf.String(), "\n")
+	if got != "{\"id\":1}\n{\"id\":2}" {
+		t.Errorf("paged body did not unwrap to its records:\n%s", buf.String())
+	}
+}
+
+func TestNDJSONOnBareArraySplitsDirectly(t *testing.T) {
+	var buf bytes.Buffer
+	w := New(&buf, FormatNDJSON)
+	if err := w.Emit(&Result{Data: json.RawMessage(`[{"a":1},"two",3]`)}); err != nil {
+		t.Fatal(err)
+	}
+	got := strings.TrimRight(buf.String(), "\n")
+	if got != "{\"a\":1}\n\"two\"\n3" {
+		t.Errorf("array did not split into one row per element:\n%s", buf.String())
+	}
+}
+
+func TestNDJSONOnNonArrayEmitsOneLine(t *testing.T) {
+	var buf bytes.Buffer
+	w := New(&buf, FormatNDJSON)
+	if err := w.Emit(&Result{Data: json.RawMessage(`{"version":"5.0"}`)}); err != nil {
+		t.Fatal(err)
+	}
+	if buf.String() != "{\"version\":\"5.0\"}\n" {
+		t.Errorf("got %q, want one compact line", buf.String())
+	}
+}
+
+// A --raw body arriving with its own trailing newline prints one newline, not
+// two: json.Indent copies trailing whitespace through, where the encoder this
+// replaced always emitted exactly one.
+func TestRawEmitsOneTrailingNewline(t *testing.T) {
+	for _, body := range []string{`{"a":1}`, "{\"a\":1}\n", "{\"a\":1}  \n\n"} {
+		var buf bytes.Buffer
+		if err := New(&buf, FormatRaw).Emit(&Result{Data: json.RawMessage(body)}); err != nil {
+			t.Fatal(err)
+		}
+		if got := buf.String(); !strings.HasSuffix(got, "}\n") || strings.HasSuffix(got, "\n\n") {
+			t.Errorf("body %q printed %q", body, got)
+		}
+	}
+}
+
+// --raw used to print an unparseable body verbatim and exit 0, alone among the
+// formats in doing so. Deleting that fallback makes it fail like the others: a
+// body arrctl cannot read is a failure, and saying so beats printing it.
+// Item 11 later moves the failure to response time and gives it its own code.
+func TestRawOnAnInvalidBodyIsAnError(t *testing.T) {
+	var buf bytes.Buffer
+	err := New(&buf, FormatRaw).Emit(&Result{Data: json.RawMessage(`<html>not json</html>`)})
+	if err == nil {
+		t.Fatalf("an unparseable body was printed and reported as success: %q", buf.String())
+	}
+	cerr, ok := err.(*CLIError)
+	if !ok {
+		t.Fatalf("err = %T, want *CLIError", err)
+	}
+	if cerr.Code != CodeParseError {
+		t.Errorf("code = %s, want PARSE_ERROR", cerr.Code)
+	}
+	if got := ExitForCode(cerr.Code); got != ExitInternal {
+		t.Errorf("exit = %d, want 4", got)
 	}
 }

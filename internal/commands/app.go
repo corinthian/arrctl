@@ -6,6 +6,7 @@
 package commands
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
@@ -16,6 +17,7 @@ import (
 	"github.com/corinthian/arrctl/internal/client"
 	"github.com/corinthian/arrctl/internal/config"
 	"github.com/corinthian/arrctl/internal/output"
+	"github.com/corinthian/arrctl/internal/xhttp"
 )
 
 // Version is the binary version, stamped into the User-Agent and `version`.
@@ -201,7 +203,12 @@ func (a *App) gate(what string) *output.CLIError {
 
 // resolvePayload is the single entry point every payload-taking command uses:
 // exactly one of --payload / --payload-file, the latter reading stdin on "-".
-func resolvePayload(payload, payloadFile string) (interface{}, error) {
+//
+// The caller's bytes are what goes on the wire. They are validated, not
+// re-encoded: decoding to check the JSON and then marshalling the result back
+// rewrote any integer wider than a float64, so a payload naming a movie by a
+// large id acted on a different record.
+func resolvePayload(payload, payloadFile string) (json.RawMessage, error) {
 	if payload != "" && payloadFile != "" {
 		return nil, output.UsageError("--payload and --payload-file are mutually exclusive")
 	}
@@ -228,12 +235,29 @@ func readPayloadFile(path string) ([]byte, error) {
 	return os.ReadFile(path)
 }
 
-func decodeJSON(data []byte, source string) (interface{}, error) {
-	var v interface{}
-	if err := json.Unmarshal(data, &v); err != nil {
+// decodeJSON validates that data is exactly one JSON value and hands the
+// original bytes back. UseNumber keeps the check itself from being the thing
+// that loses precision, and the strict single-value rule is the same one
+// responses are held to: an object followed by anything is a mistake, whether
+// or not the trailing text happens to parse.
+func decodeJSON(data []byte, source string) (json.RawMessage, error) {
+	var probe interface{}
+	if err := xhttp.DecodeOne(data, &probe); err != nil {
 		return nil, output.UsageError("invalid " + source + " JSON: " + err.Error())
 	}
-	return v, nil
+	return json.RawMessage(data), nil
+}
+
+// payloadObject reads a payload's top-level keys, rejecting anything that is
+// not a JSON object. Commands that merge a flag into the payload need the keys;
+// the object requirement is the pre-existing rule.
+func payloadObject(raw json.RawMessage, what string) (map[string]json.RawMessage, error) {
+	var m map[string]json.RawMessage
+	if len(bytes.TrimSpace(raw)) == 0 || bytes.TrimSpace(raw)[0] != '{' ||
+		json.Unmarshal(raw, &m) != nil {
+		return nil, output.UsageError(what)
+	}
+	return m, nil
 }
 
 // summarize derives a one-line human summary from a response body, used by

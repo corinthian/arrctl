@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -850,5 +851,122 @@ func TestWaitTimesOutBetweenPolls(t *testing.T) {
 	}
 	if !strings.Contains(cerr.Hint, "command wait --id 4") {
 		t.Errorf("hint = %q", cerr.Hint)
+	}
+}
+
+// captureBody stands up an instance that records the request body it was sent
+// and answers with a trivial record.
+func captureBody(t *testing.T, got *string) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("reading the request body: %v", err)
+		}
+		*got = string(b)
+		fmt.Fprint(w, `{"id":1,"name":"RefreshMovie","status":"queued"}`)
+	}))
+}
+
+// The UseNumber migration must not widen what a payload may contain: a JSON
+// object followed by anything is still a usage error.
+func TestPayloadRejectsTrailingContent(t *testing.T) {
+	for _, payload := range []string{`{"a":1} junk`, `{"a":1} {"b":2}`, `{"a":1} }`, `{"a":`} {
+		var body string
+		srv := captureBody(t, &body)
+		_, cerr := run(t, "radarr", "command", "run", "--name", "RefreshMovie",
+			"--payload", payload, "--confirm",
+			"--url", srv.URL, "--apikey", "test-only")
+		srv.Close()
+		if cerr == nil {
+			t.Errorf("payload %q was accepted, sent as %s", payload, body)
+			continue
+		}
+		if cerr.Code != output.CodeBadRequest || cerr.Exit != output.ExitUser {
+			t.Errorf("payload %q: code = %s exit = %d, want BAD_REQUEST / 1", payload, cerr.Code, cerr.Exit)
+		}
+	}
+}
+
+// The bytes on the wire are the caller's. Decoding the payload to validate it
+// and re-encoding what came back turned an id past 2^53 into a different
+// number, and the instance acted on the wrong record.
+func TestPayloadPreservesBigIntegers(t *testing.T) {
+	var body string
+	srv := captureBody(t, &body)
+	defer srv.Close()
+
+	_, cerr := run(t, "radarr", "command", "run", "--name", "RefreshMovie",
+		"--payload", `{"movieIds":[9007199254740993]}`, "--confirm",
+		"--url", srv.URL, "--apikey", "test-only")
+	if cerr != nil {
+		t.Fatalf("run failed: %+v", cerr)
+	}
+	if !strings.Contains(body, "9007199254740993") {
+		t.Errorf("the integer was rewritten on the wire: %s", body)
+	}
+}
+
+// --name is the flag; a `name` in the payload is overridden by it, and every
+// other key in the payload survives.
+func TestNameOverridesPayloadName(t *testing.T) {
+	var body string
+	srv := captureBody(t, &body)
+	defer srv.Close()
+
+	_, cerr := run(t, "radarr", "command", "run", "--name", "RefreshMovie",
+		"--payload", `{"name":"SomethingElse","z":1}`, "--confirm",
+		"--url", srv.URL, "--apikey", "test-only")
+	if cerr != nil {
+		t.Fatalf("run failed: %+v", cerr)
+	}
+	var sent map[string]interface{}
+	if err := json.Unmarshal([]byte(body), &sent); err != nil {
+		t.Fatalf("body is not an object: %v (%s)", err, body)
+	}
+	if sent["name"] != "RefreshMovie" {
+		t.Errorf("name = %v, want the flag to win", sent["name"])
+	}
+	if sent["z"] == nil {
+		t.Errorf("the payload's other keys were dropped: %s", body)
+	}
+}
+
+// Top level only. A nested object in the payload is replaced wholesale by the
+// merge, never merged into key by key.
+func TestMergeIsTopLevelOnly(t *testing.T) {
+	var body string
+	srv := captureBody(t, &body)
+	defer srv.Close()
+
+	_, cerr := run(t, "radarr", "command", "run", "--name", "RefreshMovie",
+		"--payload", `{"opts":{"deep":1}}`, "--confirm",
+		"--url", srv.URL, "--apikey", "test-only")
+	if cerr != nil {
+		t.Fatalf("run failed: %+v", cerr)
+	}
+	var sent map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(body), &sent); err != nil {
+		t.Fatalf("body is not an object: %v (%s)", err, body)
+	}
+	if string(sent["opts"]) != `{"deep":1}` {
+		t.Errorf("opts = %s, want the nested object carried through untouched", sent["opts"])
+	}
+}
+
+// A payload that is not a JSON object stays a usage error.
+func TestPayloadMustBeAnObjectForCommandRun(t *testing.T) {
+	var body string
+	srv := captureBody(t, &body)
+	defer srv.Close()
+
+	_, cerr := run(t, "radarr", "command", "run", "--name", "RefreshMovie",
+		"--payload", `[1,2]`, "--confirm",
+		"--url", srv.URL, "--apikey", "test-only")
+	if cerr == nil {
+		t.Fatalf("an array payload was accepted, sent as %s", body)
+	}
+	if cerr.Code != output.CodeBadRequest {
+		t.Errorf("code = %s, want BAD_REQUEST", cerr.Code)
 	}
 }

@@ -5,9 +5,12 @@
 package output
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
+
+	"github.com/corinthian/arrctl/internal/rawjson"
 )
 
 // ExitCode is the process exit status. Stable per the spec's error model.
@@ -265,17 +268,28 @@ func (w *Writer) writeJSON(v interface{}) error {
 	return enc.Encode(v)
 }
 
-// writeRaw passes the app body through verbatim (pretty-printed if it parses).
+// writeRaw passes the app body through, indented on the bytes rather than
+// decoded and re-encoded. Key order and number literals therefore survive: a
+// tmdbId past 2^53 came back as a different number through the old
+// interface{} round trip, and the instance's own key order was sorted away.
+//
+// There is no verbatim-bytes fallback for a body that does not parse. An
+// invalid body is a failure, and reporting it as one beats printing it and
+// exiting 0.
 func (w *Writer) writeRaw(data json.RawMessage) error {
 	if len(data) == 0 {
 		return nil
 	}
-	var v interface{}
-	if err := json.Unmarshal(data, &v); err != nil {
-		_, werr := w.Out.Write(append([]byte(data), '\n'))
-		return werr
+	out, err := rawjson.Indent(data)
+	if err != nil {
+		return err
 	}
-	return w.writeJSON(v)
+	// json.Indent copies trailing whitespace from the source through to the
+	// output, so a body arriving with its own newline would otherwise print a
+	// blank line after it. The old encoder emitted exactly one newline and so
+	// does this.
+	_, err = w.Out.Write(append(bytes.TrimRight(out, " \t\r\n"), '\n'))
+	return err
 }
 
 // writeNDJSON emits one line per element of a top-level array. A Servarr paged
@@ -288,8 +302,8 @@ func (w *Writer) writeNDJSON(data json.RawMessage) error {
 	if recs := PagedRecords(data); recs != nil {
 		data = recs
 	}
-	var arr []json.RawMessage
-	if err := json.Unmarshal(data, &arr); err != nil {
+	arr, ok := rawjson.SplitArray(data)
+	if !ok {
 		return w.writeCompactLine(data)
 	}
 	for _, el := range arr {
@@ -312,14 +326,17 @@ func PagedRecords(data json.RawMessage) json.RawMessage {
 	return probe.Records
 }
 
+// writeCompactLine emits one row, compacted on the bytes. Nothing is decoded,
+// so nothing is re-encoded: HTML escaping cannot be reintroduced and integer
+// literals cannot be rewritten, which is what SetEscapeHTML(false) and the
+// UseNumber decoding were each protecting against separately.
 func (w *Writer) writeCompactLine(raw json.RawMessage) error {
-	var v interface{}
-	if err := json.Unmarshal(raw, &v); err != nil {
+	line, err := rawjson.Compact(raw)
+	if err != nil {
 		return err
 	}
-	enc := json.NewEncoder(w.Out)
-	enc.SetEscapeHTML(false)
-	return enc.Encode(v) // Encode appends a newline
+	_, err = w.Out.Write(append(line, '\n'))
+	return err
 }
 
 func (w *Writer) writeTerse(r *Result) error {

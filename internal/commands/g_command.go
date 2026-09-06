@@ -12,6 +12,7 @@ import (
 	"github.com/corinthian/arrctl/internal/client"
 	"github.com/corinthian/arrctl/internal/config"
 	"github.com/corinthian/arrctl/internal/output"
+	"github.com/corinthian/arrctl/internal/rawjson"
 	"github.com/spf13/cobra"
 )
 
@@ -154,19 +155,30 @@ func (a *App) commandRun(s *appSpec) *cobra.Command {
 					return cerr
 				}
 			}
-			body := map[string]interface{}{}
+			base := json.RawMessage("{}")
 			if payload != "" || payloadFile != "" {
 				v, err := resolvePayload(payload, payloadFile)
 				if err != nil {
 					return err
 				}
-				m, ok := v.(map[string]interface{})
-				if !ok {
-					return output.UsageError("--payload for `command run` must be a JSON object")
+				if _, err := payloadObject(v,
+					"--payload for `command run` must be a JSON object"); err != nil {
+					return err
 				}
-				body = m
+				base = v
 			}
-			body["name"] = name
+			// --name is the flag, so it wins over a name in the payload.
+			// Top-level keys only: a nested object in the payload is the
+			// caller's to shape and is carried through as it stands.
+			nameJSON, merr := json.Marshal(name)
+			if merr != nil {
+				return output.NewError(output.CodeParseError, merr.Error())
+			}
+			body, merr := rawjson.MergeObjects(base,
+				map[string]json.RawMessage{"name": nameJSON})
+			if merr != nil {
+				return output.UsageError("--payload for `command run` must be a JSON object")
+			}
 
 			res, err := a.post("/command", client.Options{Body: body})
 			if err != nil {
