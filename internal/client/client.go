@@ -9,7 +9,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
-	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -19,9 +18,9 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
+	"github.com/corinthian/arrctl/internal/cause"
 	"github.com/corinthian/arrctl/internal/output"
 	"github.com/corinthian/arrctl/internal/xhttp"
 )
@@ -31,6 +30,12 @@ const APIPrefix = "/api/v3"
 
 // PageCap is the --all runaway guard.
 const PageCap = 100
+
+// BodyLimit bounds a single response body. Provisional default, per contract
+// 2.3: Richard has not measured a real Radarr/Sonarr instance's largest
+// response, so this is the 64 MiB floor rather than four times an observed
+// value.
+const BodyLimit int64 = 64 << 20
 
 // KeyPlacement selects where the API key is sent.
 type KeyPlacement string
@@ -173,22 +178,52 @@ func (c *Client) doOnce(ctx context.Context, method, path string, opts Options) 
 	if err != nil {
 		return nil, c.transportError(err, endpoint, time.Since(start))
 	}
-	defer resp.Body.Close()
+	nonOK := resp.StatusCode < 200 || resp.StatusCode >= 300
 
-	body, rerr := io.ReadAll(resp.Body)
+	// xhttp.ReadBody closes resp.Body on every path, including oversize and
+	// I/O failure.
+	body, rerr := xhttp.ReadBody(resp, BodyLimit)
 	dur := time.Since(start).Milliseconds()
 	if rerr != nil {
+		if errors.Is(rerr, xhttp.ErrOversize) {
+			if nonOK {
+				// No bytes to work with: the HTTP status classification
+				// wins unchanged, and the snippet hint is skipped along with
+				// the body.
+				return nil, c.mapHTTPError(resp, nil, endpoint, dur)
+			}
+			return nil, &output.CLIError{
+				Code: output.CodeDecodeError,
+				Message: fmt.Sprintf("response body from %s %s exceeds the %d byte bound",
+					method, endpoint, BodyLimit),
+				Exit: output.ExitInternal, App: c.app, Endpoint: endpoint, DurationMS: dur,
+			}
+		}
+		// Any other read failure is a transport cause, not a parse failure:
+		// the connection broke mid-body, which is not a statement about the
+		// bytes that did arrive.
 		return nil, &output.CLIError{
-			Code: output.CodeParseError, Message: "reading response body: " + rerr.Error(),
-			Exit: output.ExitTransport, App: c.app, Endpoint: endpoint, DurationMS: dur,
+			Code:    output.CodeTransportFailed,
+			Message: "reading response from " + c.app + ": " + scrub(rerr),
+			Exit:    output.ExitTransport, App: c.app, Endpoint: endpoint, DurationMS: dur,
 		}
 	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+	if nonOK {
 		return nil, c.mapHTTPError(resp, body, endpoint, dur)
 	}
 
-	res := &Result{Data: json.RawMessage(body), Status: resp.StatusCode, Endpoint: endpoint, DurationMS: dur}
-	if p := decodePaged(body); p != nil {
+	var raw json.RawMessage
+	if err := xhttp.DecodeOne(body, &raw); err != nil {
+		return nil, &output.CLIError{
+			Code: output.CodeDecodeError,
+			Message: fmt.Sprintf("invalid JSON in response from %s %s: %s",
+				method, endpoint, err.Error()),
+			Exit: output.ExitInternal, App: c.app, Endpoint: endpoint, DurationMS: dur,
+		}
+	}
+
+	res := &Result{Data: raw, Status: resp.StatusCode, Endpoint: endpoint, DurationMS: dur}
+	if p := decodePaged(raw); p != nil {
 		res.Pagination = &output.Pagination{Page: p.Page, PageSize: p.PageSize, TotalRecords: p.TotalRecords}
 	}
 	return res, nil
@@ -357,44 +392,50 @@ func (c *Client) buildRequest(ctx context.Context, method, path string, opts Opt
 	return req, nil
 }
 
-// transportError classifies a client-side failure into the TRANSPORT_* family.
-// The message is scrubbed of the request URL, because under --apikey-in query
-// Go's url.Error carries the full URL — key included.
+// transportError classifies a client-side failure (from the HTTP round trip
+// itself, before any body is read) into the TRANSPORT_* family, via
+// xhttp.Classify and the cause-to-code table in contract 2.5. The message is
+// scrubbed of the request URL, because under --apikey-in query Go's url.Error
+// carries the full URL — key included.
 func (c *Client) transportError(err error, path string, d time.Duration) *output.CLIError {
 	e := &output.CLIError{
 		Exit: output.ExitTransport, App: c.app, Endpoint: path, DurationMS: d.Milliseconds(),
 	}
-	var dnsErr *net.DNSError
-	var certErr *x509.CertificateInvalidError
-	var hostErr x509.HostnameError
-	var authErr x509.UnknownAuthorityError
-	var tlsErr *tls.CertificateVerificationError
-
-	switch {
-	case errors.Is(err, context.DeadlineExceeded), isTimeout(err):
+	switch xhttp.Classify(err) {
+	case cause.Timeout:
 		e.Code = output.CodeTransportTimeout
 		e.Message = "request to " + c.app + " timed out"
-		e.Hint = "raise --timeout, or check the instance is up"
-	case errors.As(err, &dnsErr):
+		// A timeout never implies a mutation is safe to retry: the request
+		// may already have reached the instance.
+		e.Hint = "raise --timeout, or check the instance is up; the request may have already reached " + c.app
+	case cause.DNS:
 		e.Code = output.CodeTransportDNS
-		e.Message = "cannot resolve the " + c.app + " host: " + dnsErr.Name
-	case errors.As(err, &tlsErr), errors.As(err, &certErr), errors.As(err, &hostErr), errors.As(err, &authErr):
+		e.Message = "cannot resolve the " + c.app + " host: " + dnsName(err)
+	case cause.TLS:
 		e.Code = output.CodeTransportTLS
 		e.Message = "TLS verification failed for " + c.app
 		e.Hint = "if this instance uses a self-signed or expired certificate, set insecure = true under [" + c.app + "] in the config, or pass --insecure"
-	case errors.Is(err, syscall.ECONNREFUSED):
+	case cause.Refused:
 		e.Code = output.CodeTransportRefused
 		e.Message = "connection refused by " + c.app
 	default:
+		// TransportOther and Cancelled both land here. No tool installs a
+		// signal handler today, so Cancelled is unreachable in practice, but
+		// the mapping is exact per contract 2.5.
 		e.Code = output.CodeTransportFailed
 		e.Message = "transport error talking to " + c.app + ": " + scrub(err)
 	}
 	return e
 }
 
-func isTimeout(err error) bool {
-	var ne net.Error
-	return errors.As(err, &ne) && ne.Timeout()
+// dnsName pulls the unresolved host out of a classified DNS failure, for the
+// message; xhttp.Classify itself returns only the cause, not the error.
+func dnsName(err error) string {
+	var dnsErr *net.DNSError
+	if errors.As(err, &dnsErr) {
+		return dnsErr.Name
+	}
+	return ""
 }
 
 // scrub renders a transport error without the request URL. url.Error.Error()

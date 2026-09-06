@@ -1,6 +1,7 @@
 package client
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -488,5 +489,222 @@ func TestBuildRequestPreservesURLBase(t *testing.T) {
 		if gotQuery != "5" {
 			t.Errorf("base %q lost the query: pageSize = %q", base, gotQuery)
 		}
+	}
+}
+
+// jsonStringOfLength returns a valid JSON string literal of exactly n bytes
+// (n >= 2): the two quote bytes plus n-2 filler bytes.
+func jsonStringOfLength(n int64) []byte {
+	b := make([]byte, n)
+	b[0] = '"'
+	for i := int64(1); i < n-1; i++ {
+		b[i] = 'a'
+	}
+	b[n-1] = '"'
+	return b
+}
+
+// A body of exactly BodyLimit bytes is a valid, non-oversize body.
+func TestExactLimitBodySucceeds(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write(jsonStringOfLength(BodyLimit))
+	}))
+	defer srv.Close()
+
+	c := newTestClient(t, srv, "radarr")
+	_, cerr := c.Do(context.Background(), http.MethodGet, "/movie", Options{})
+	if cerr != nil {
+		t.Fatalf("exact-limit body rejected: %+v", cerr)
+	}
+}
+
+// A body of BodyLimit+1 bytes is oversize: DECODE_ERROR at exit 4, naming the
+// bound, method and path — never truncated, never decoded.
+func TestOversizeBodyIsDecodeError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write(jsonStringOfLength(BodyLimit + 1))
+	}))
+	defer srv.Close()
+
+	c := newTestClient(t, srv, "radarr")
+	_, cerr := c.Do(context.Background(), http.MethodGet, "/movie", Options{})
+	if cerr == nil {
+		t.Fatal("an oversize body was accepted")
+	}
+	if cerr.Code != output.CodeDecodeError || cerr.Exit != output.ExitInternal {
+		t.Errorf("code = %s exit = %d, want DECODE_ERROR / 4", cerr.Code, cerr.Exit)
+	}
+	if !strings.Contains(cerr.Message, "GET") || !strings.Contains(cerr.Message, "/movie") {
+		t.Errorf("message %q does not name the method and path", cerr.Message)
+	}
+}
+
+// A non-JSON body on a 2xx from an endpoint that promises JSON is a decode
+// error, not a silent success.
+func TestNonJSON2xxIsDecodeError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("<html>not json</html>"))
+	}))
+	defer srv.Close()
+
+	c := newTestClient(t, srv, "radarr")
+	_, cerr := c.Do(context.Background(), http.MethodGet, "/movie", Options{})
+	if cerr == nil || cerr.Code != output.CodeDecodeError || cerr.Exit != output.ExitInternal {
+		t.Fatalf("cerr = %+v, want DECODE_ERROR / 4", cerr)
+	}
+}
+
+// A valid JSON value followed by garbage is a decode error: the trailing
+// content is malformed regardless of whether it happens to parse.
+func TestValidPrefixPlusGarbageIsDecodeError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"id":1} junk`))
+	}))
+	defer srv.Close()
+
+	c := newTestClient(t, srv, "radarr")
+	_, cerr := c.Do(context.Background(), http.MethodGet, "/movie", Options{})
+	if cerr == nil || cerr.Code != output.CodeDecodeError || cerr.Exit != output.ExitInternal {
+		t.Fatalf("cerr = %+v, want DECODE_ERROR / 4", cerr)
+	}
+}
+
+// A body that read cleanly (Content-Length matched what arrived) but whose
+// JSON is truncated is a decode error, not a transport failure.
+func TestTruncatedBodyIsDecodeError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"id":1,`))
+	}))
+	defer srv.Close()
+
+	c := newTestClient(t, srv, "radarr")
+	_, cerr := c.Do(context.Background(), http.MethodGet, "/movie", Options{})
+	if cerr == nil || cerr.Code != output.CodeDecodeError || cerr.Exit != output.ExitInternal {
+		t.Fatalf("cerr = %+v, want DECODE_ERROR / 4", cerr)
+	}
+}
+
+// A non-JSON body on a 401 keeps the HTTP status classification: the status
+// is authoritative and the body is never treated as a decode failure.
+func TestNonJSON401KeepsHTTPStatus(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		w.Write([]byte("<html>unauthorized</html>"))
+	}))
+	defer srv.Close()
+
+	c := newTestClient(t, srv, "radarr")
+	_, cerr := c.Do(context.Background(), http.MethodGet, "/movie", Options{})
+	if cerr == nil || cerr.Code != output.CodeArrAuthFailed || cerr.HTTPStatus != 401 {
+		t.Fatalf("cerr = %+v, want ARR_AUTH_FAILED / 401", cerr)
+	}
+}
+
+// An oversize body on a non-2xx keeps the HTTP status classification too: no
+// bytes to work with, so the snippet hint is skipped, not converted into a
+// decode error.
+func TestOversizeOn401KeepsAuthCode(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		w.Write(bytes.Repeat([]byte("x"), int(BodyLimit)+1))
+	}))
+	defer srv.Close()
+
+	c := newTestClient(t, srv, "radarr")
+	_, cerr := c.Do(context.Background(), http.MethodGet, "/movie", Options{})
+	if cerr == nil || cerr.Code != output.CodeArrAuthFailed || cerr.HTTPStatus != 401 {
+		t.Fatalf("cerr = %+v, want ARR_AUTH_FAILED / 401", cerr)
+	}
+	if cerr.Hint != "store the key in the Keychain" {
+		t.Errorf("hint = %q, want the unchanged auth hint: the snippet hint must be skipped, not this one", cerr.Hint)
+	}
+}
+
+// Empty and 204 bodies on a 2xx are not decode errors.
+func TestEmptyAnd204BodiesAreNotDecodeErrors(t *testing.T) {
+	for _, status := range []int{http.StatusOK, http.StatusNoContent} {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(status)
+		}))
+		res, cerr := newTestClient(t, srv, "radarr").
+			Do(context.Background(), http.MethodGet, "/movie", Options{})
+		srv.Close()
+		if cerr != nil {
+			t.Errorf("status %d: %+v, want success", status, cerr)
+			continue
+		}
+		if len(res.Data) != 0 {
+			t.Errorf("status %d: data = %q, want empty", status, res.Data)
+		}
+	}
+}
+
+// A connection that closes mid-body (before the declared Content-Length is
+// met) is a transport failure, not a parse failure: the bytes that did arrive
+// say nothing about whether the response was well-formed.
+func TestBodyReadFailureIsTransportFailed(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hj, ok := w.(http.Hijacker)
+		if !ok {
+			t.Fatal("ResponseWriter does not support Hijack")
+		}
+		conn, buf, err := hj.Hijack()
+		if err != nil {
+			t.Fatal(err)
+		}
+		buf.WriteString("HTTP/1.1 200 OK\r\nContent-Length: 1000\r\nContent-Type: application/json\r\n\r\n{\"a\":")
+		buf.Flush()
+		conn.Close()
+	}))
+	defer srv.Close()
+
+	c := newTestClient(t, srv, "radarr")
+	_, cerr := c.Do(context.Background(), http.MethodGet, "/movie", Options{})
+	if cerr == nil {
+		t.Fatal("a truncated connection was accepted")
+	}
+	if cerr.Code != output.CodeTransportFailed || cerr.Exit != output.ExitTransport {
+		t.Errorf("code = %s exit = %d, want TRANSPORT_FAILED / 3", cerr.Code, cerr.Exit)
+	}
+}
+
+// The same connection-truncation scenario, named for the specific error Go's
+// http package raises (io.ErrUnexpectedEOF): it must not be misclassified as
+// a decode failure just because the underlying error type overlaps with one
+// JSON decoding also produces.
+func TestUnexpectedEOFIsTransportFailed(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hj, _ := w.(http.Hijacker)
+		conn, buf, err := hj.Hijack()
+		if err != nil {
+			t.Fatal(err)
+		}
+		buf.WriteString("HTTP/1.1 200 OK\r\nContent-Length: 500\r\nContent-Type: application/json\r\n\r\n{\"partial")
+		buf.Flush()
+		conn.Close()
+	}))
+	defer srv.Close()
+
+	c := newTestClient(t, srv, "radarr")
+	_, cerr := c.Do(context.Background(), http.MethodGet, "/movie", Options{})
+	if cerr == nil || cerr.Code != output.CodeTransportFailed || cerr.Exit != output.ExitTransport {
+		t.Fatalf("cerr = %+v, want TRANSPORT_FAILED / 3", cerr)
+	}
+}
+
+// A genuine connection refusal still lands on TRANSPORT_REFUSED: the
+// default-branch rewrite must not blur a real refusal into TRANSPORT_FAILED.
+func TestGenuineRefusalStaysTransportRefused(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	url := srv.URL
+	srv.Close() // nothing is listening now
+
+	c := newTestClient(t, &httptest.Server{URL: url}, "radarr")
+	_, cerr := c.Do(context.Background(), http.MethodGet, "/movie", Options{})
+	if cerr == nil {
+		t.Fatal("a dead server returned success")
+	}
+	if cerr.Code != output.CodeTransportRefused || cerr.Exit != output.ExitTransport {
+		t.Errorf("code = %s exit = %d, want TRANSPORT_REFUSED / 3", cerr.Code, cerr.Exit)
 	}
 }
