@@ -70,6 +70,13 @@ type App struct {
 	// indistinguishable from an untouched flag, and the empty value must be an
 	// error rather than falling through to env or file.
 	timeoutSet bool
+
+	// invocationCtx is cmd.Context(), set from PersistentPreRunE. main.go calls
+	// commands.Execute(), not ExecuteContext(), so in production this is always
+	// context.Background() — no signal handler installs a deadline or a
+	// cancellation on it. ctx() falls back to context.Background() when unset,
+	// which covers every test that builds an App directly.
+	invocationCtx context.Context
 }
 
 // NewApp builds an App with a default JSON writer; build() finishes setup in
@@ -171,8 +178,18 @@ func (a *App) emitLocal(v interface{}, terse string) error {
 	return a.Out.Emit(&output.Result{Data: b, Terse: terse})
 }
 
-// ctx returns a background context; the deadline is the HTTP client timeout.
-func (a *App) ctx() context.Context { return context.Background() }
+// ctx returns the invocation's context, set from cmd.Context() in
+// PersistentPreRunE, falling back to context.Background() when unset (every
+// test that builds an App directly, and any code path reached before
+// PersistentPreRunE runs). The deadline, if any, is the HTTP client timeout;
+// cancellation is otherwise unreachable in production, since main.go calls
+// Execute(), not ExecuteContext(), and no tool installs a signal handler.
+func (a *App) ctx() context.Context {
+	if a.invocationCtx != nil {
+		return a.invocationCtx
+	}
+	return context.Background()
+}
 
 func (a *App) do(method, path string, opts client.Options) (*client.Result, error) {
 	return a.doCtx(a.ctx(), method, path, opts)

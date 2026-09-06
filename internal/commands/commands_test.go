@@ -2,6 +2,7 @@ package commands
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -13,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/corinthian/arrctl/internal/client"
 	"github.com/corinthian/arrctl/internal/config"
 	"github.com/corinthian/arrctl/internal/output"
 	"github.com/spf13/cobra"
@@ -1047,4 +1049,41 @@ func writeConfigTOML(t *testing.T, body string) string {
 		t.Fatal(err)
 	}
 	return p
+}
+
+// The invocation context, once threaded through, is reachable by an ordinary
+// request: cancelling it mid-flight ends the request as TRANSPORT_FAILED, not
+// as an unreachable code path. The test drives App.invocationCtx directly
+// rather than relying on cobra to supply a cancellable context — production
+// never does, since main.go calls Execute(), not ExecuteContext().
+func TestCancelledContextIsTransportFailed(t *testing.T) {
+	block := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-block
+	}))
+	defer srv.Close()
+	defer close(block)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	a := NewApp()
+	a.invocationCtx = ctx
+	a.Target = config.Radarr
+	a.Flags.URL = srv.URL
+	a.Flags.APIKey = "test-only"
+	a.Flags.Timeout = "30"
+	a.timeoutSet = true
+
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		cancel()
+	}()
+
+	_, err := a.get("/movie", client.Options{})
+	if err == nil {
+		t.Fatal("a cancelled request succeeded")
+	}
+	cerr := err.(*output.CLIError)
+	if cerr.Code != output.CodeTransportFailed || cerr.Exit != output.ExitTransport {
+		t.Errorf("code = %s exit = %d, want TRANSPORT_FAILED / 3", cerr.Code, cerr.Exit)
+	}
 }

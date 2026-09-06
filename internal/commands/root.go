@@ -32,6 +32,7 @@ func NewRoot() (*cobra.Command, *App) {
 				emitLLMHelp(cmd, app.Out)
 				os.Exit(0)
 			}
+			app.invocationCtx = cmd.Context()
 			app.Out.Format = app.resolveFormat()
 			app.insecureSet = cmd.Flags().Changed("insecure")
 			// pf, not cmd.Flags(): a subcommand (command wait) shadows this
