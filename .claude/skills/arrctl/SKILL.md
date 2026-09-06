@@ -121,6 +121,9 @@ as JSON. Read those instead of guessing.
 - A `--config` or `$ARRCTL_CONFIG` path that is missing or unreadable is a
   `BAD_CONFIG` at exit 1, not a quiet fall back to the default file. `arrctl
   config path` diagnoses it and still exits 0.
+- A config file that will not parse is a `BAD_CONFIG` at exit 1 for every
+  command, `config path` and `config init` included. Only a bad *path* is
+  tolerated. Say the file has a syntax error and name it; do not retry.
 
 ## What this skill does not do
 

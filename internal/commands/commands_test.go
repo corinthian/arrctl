@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -699,6 +700,60 @@ func TestConfigPathToleratesBadExplicitPath(t *testing.T) {
 	if env.Data.Error == "" {
 		t.Error("config_error is empty; it must say why the path is unusable")
 	}
+}
+
+// Tolerance is about the path, not the contents. A file `config path` can read
+// and cannot parse is a hard error there too: the diagnostic exists to explain
+// an unusable path, and reporting "no config" for a file that is plainly
+// present would be the wrong answer.
+func TestConfigPathDoesNotTolerateAnUnparseableFile(t *testing.T) {
+	bad := writeUnparseableConfig(t)
+	_, cerr := run(t, "config", "path", "--config", bad)
+	if cerr == nil {
+		t.Fatal("config path forgave an unparseable file")
+	}
+	if cerr.Code != output.CodeBadConfig || cerr.Exit != output.ExitUser {
+		t.Errorf("code = %s exit = %d, want BAD_CONFIG / 1", cerr.Code, cerr.Exit)
+	}
+}
+
+// `config init --force` is tolerant so it can name a file that does not exist
+// yet. That must not become licence to overwrite a file it failed to
+// understand: the config may hold settings the caller still wants.
+func TestConfigInitOverUnparseableFileFailsBadConfig(t *testing.T) {
+	bad := writeUnparseableConfig(t)
+	before, err := os.ReadFile(bad)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, cerr := run(t, "config", "init", "--force", "--config", bad,
+		"--radarr-url", "http://127.0.0.1:7878")
+	if cerr == nil {
+		t.Fatal("config init overwrote a config file it could not parse")
+	}
+	if cerr.Code != output.CodeBadConfig || cerr.Exit != output.ExitUser {
+		t.Errorf("code = %s exit = %d, want BAD_CONFIG / 1", cerr.Code, cerr.Exit)
+	}
+	after, err := os.ReadFile(bad)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(before) {
+		t.Errorf("the file was modified:\n%s", after)
+	}
+}
+
+// writeUnparseableConfig writes a file that is present and readable and is not
+// TOML, with the default config path pointed somewhere empty.
+func writeUnparseableConfig(t *testing.T) string {
+	t.Helper()
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("ARRCTL_CONFIG", "")
+	p := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(p, []byte("[radarr\nurl = "), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return p
 }
 
 // Every other command fails closed on it, at exit 1.

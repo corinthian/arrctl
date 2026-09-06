@@ -6,12 +6,14 @@ package config
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/corinthian/arrctl/internal/configpath"
 	toml "github.com/pelletier/go-toml/v2"
 	"github.com/zalando/go-keyring"
 )
@@ -104,6 +106,9 @@ type Loaded struct {
 // tolerate is for the read-only diagnostics only — `config path` exists to
 // explain this very failure, and `config init --config /new/file.toml` targets
 // a file that does not exist yet. Nothing that talks to an instance sets it.
+// It covers an unusable path and an unreadable file, both of which are
+// statements about where the file is rather than about what is in it. A file
+// that will not parse is never forgiven.
 func LoadFile(explicit string, tolerate bool) (*Loaded, error) {
 	l := &Loaded{}
 	r := resolveConfigPath(explicit)
@@ -124,9 +129,10 @@ func LoadFile(explicit string, tolerate bool) (*Loaded, error) {
 		return nil, fmt.Errorf("reading %s: %w", r.Path, err)
 	}
 	if err := toml.Unmarshal(b, &l.File); err != nil {
-		if tolerate {
-			return l, nil
-		}
+		// Not forgiven, tolerate or not. A path arrctl cannot use is a
+		// question about where to look; a file it read and could not
+		// understand is a question about what is in it, and no command has
+		// a reason to carry on with settings it demonstrably misread.
 		return nil, fmt.Errorf("parsing %s: %w", r.Path, err)
 	}
 	l.Source = r.Path
@@ -289,35 +295,56 @@ func (r Resolution) Found() bool { return r.Path != "" && r.Err == nil }
 // ~/.config/arrctl/config.toml. The first two are explicit and never fall
 // through to the next candidate. An empty $ARRCTL_CONFIG is unset, not a path.
 func resolveConfigPath(explicit string) Resolution {
-	if p := strings.TrimSpace(explicit); p != "" {
-		return statConfig(p, true, "--config")
+	source, named := configSource(explicit)
+	r := Resolution{Source: source}
+
+	def, err := DefaultConfigPath()
+	if err != nil && !named {
+		// No home directory and nothing named: there is no path to report
+		// and nothing to read. Every setting still has a flag and an
+		// environment variable.
+		return r
 	}
-	if p := strings.TrimSpace(os.Getenv("ARRCTL_CONFIG")); p != "" {
-		return statConfig(p, true, "$ARRCTL_CONFIG")
-	}
-	p, err := DefaultConfigPath()
-	if err != nil {
-		return Resolution{Source: "the default config path"}
-	}
-	r := statConfig(p, false, "the default config path")
-	if r.Err != nil && errors.Is(r.Err, os.ErrNotExist) {
-		// The default file is allowed to be absent: every setting has a
-		// flag or environment path.
-		return Resolution{Source: r.Source}
+
+	path, isExplicit, perr := configpath.Resolve(explicit, "ARRCTL_CONFIG", def)
+	r.Path, r.Explicit = path, isExplicit
+	if perr != nil {
+		r.Err = describePathError(perr, source)
+		r.Path = ""
 	}
 	return r
 }
 
-func statConfig(path string, explicit bool, source string) Resolution {
-	r := Resolution{Path: path, Explicit: explicit, Source: source}
-	st, err := os.Stat(path)
-	switch {
-	case err != nil:
-		r.Path, r.Err = "", fmt.Errorf("config file %s (from %s) cannot be used: %w", path, source, err)
-	case st.IsDir():
-		r.Path, r.Err = "", fmt.Errorf("config path %s (from %s) is a directory, not a file", path, source)
+// configSource names where the path came from, for the error text. configpath
+// deliberately knows no arrctl-specific labels, so the same precedence it
+// applies is applied here to pick the label; the boolean says whether either
+// explicit source supplied one.
+func configSource(explicit string) (string, bool) {
+	if strings.TrimSpace(explicit) != "" {
+		return "--config", true
 	}
-	return r
+	if strings.TrimSpace(os.Getenv("ARRCTL_CONFIG")) != "" {
+		return "$ARRCTL_CONFIG", true
+	}
+	return "the default config path", false
+}
+
+// describePathError rewrites configpath's error in arrctl's own words. The two
+// forms are the ones every existing diagnostic uses, and they name the source
+// so the caller knows which of three places to fix.
+func describePathError(err error, source string) error {
+	var perr *fs.PathError
+	path := ""
+	if errors.As(err, &perr) {
+		path = perr.Path
+	}
+	if errors.Is(err, configpath.ErrIsDirectory) {
+		return fmt.Errorf("config path %s (from %s) is a directory, not a file", path, source)
+	}
+	if perr != nil {
+		return fmt.Errorf("config file %s (from %s) cannot be used: %w", path, source, perr)
+	}
+	return fmt.Errorf("config file (from %s) cannot be used: %w", source, err)
 }
 
 // ResolvedConfigPath reports which config file would be read, whether the

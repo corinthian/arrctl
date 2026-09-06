@@ -75,6 +75,13 @@ Two commands are exempt, because they exist for exactly this failure:
 `config_error` alongside `config_in_use` — and still exits 0, and `config init
 --config /new/file.toml` writes a file that does not exist yet.
 
+The exemption covers an unusable *path* only. A file that is present and
+readable and will not parse is a `BAD_CONFIG` at exit 1 for every command,
+`config path` and `config init` included: where to look is a different question
+from what is in the file, and nothing should carry on with settings it has just
+failed to read. `config init --force` will not overwrite a file it could not
+parse, so a config with a typo in it is reported rather than replaced.
+
 `insecure = true` under an app's table skips TLS verification for that app
 alone, for an instance behind a self-signed or expired certificate. Set it per
 app so a working certificate on the other one is untouched.

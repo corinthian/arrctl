@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -324,6 +325,50 @@ func TestTolerantLoadSurvivesBadExplicitPath(t *testing.T) {
 	isolateHome(t)
 	if _, err := LoadFile("/nonexistent/arrctl/x.toml", true); err != nil {
 		t.Fatalf("the tolerant form failed on a missing explicit path: %v", err)
+	}
+	// A path it cannot use is forgiven. A file whose contents will not parse
+	// is not: the file is there, it was read, and it is wrong.
+	bad := filepath.Join(t.TempDir(), "broken.toml")
+	if err := os.WriteFile(bad, []byte("this is not = = toml\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadFile(bad, true); err == nil {
+		t.Fatal("the tolerant form forgave an unparseable file")
+	}
+}
+
+// Tolerance covers an unusable path, not unusable contents. `config path`
+// exists to explain a broken path and must survive one; nothing has any reason
+// to keep going with a file it could read and could not understand.
+func TestTolerateDoesNotForgiveParseFailure(t *testing.T) {
+	isolateHome(t)
+	p := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(p, []byte("[radarr\nurl = "), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	l, err := LoadFile(p, true)
+	if err == nil {
+		t.Fatalf("unparseable TOML was forgiven under tolerance: %+v", l)
+	}
+	if !strings.Contains(err.Error(), p) {
+		t.Errorf("error does not name the file: %v", err)
+	}
+}
+
+// An unreadable-but-present file is a path or I/O failure, not a statement
+// about the file's contents, so tolerance still forgives it.
+func TestUnreadableFileStaysForgivenUnderTolerance(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads a mode-000 file regardless")
+	}
+	isolateHome(t)
+	p := writeConfig(t, sample)
+	if err := os.Chmod(p, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(p, 0o600) })
+	if _, err := LoadFile(p, true); err != nil {
+		t.Fatalf("an unreadable file was not forgiven under tolerance: %v", err)
 	}
 }
 
