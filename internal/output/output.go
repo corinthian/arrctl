@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 
 	"github.com/corinthian/arrctl/internal/rawjson"
 )
@@ -190,11 +191,16 @@ const (
 type Writer struct {
 	Out    io.Writer
 	Format Format
+	// Err is where EmitError reports a write failure on the error path
+	// itself: a plain-text line, since the JSON envelope it was trying to
+	// write is exactly what just failed. Defaults to os.Stderr; a test
+	// substitutes a buffer.
+	Err io.Writer
 }
 
 // New returns a Writer.
 func New(out io.Writer, f Format) *Writer {
-	return &Writer{Out: out, Format: f}
+	return &Writer{Out: out, Format: f, Err: os.Stderr}
 }
 
 // Result is a successful command outcome ready to render.
@@ -255,7 +261,17 @@ func (w *Writer) EmitError(e *CLIError) ExitCode {
 	if e.App != "" || e.Endpoint != "" || e.DurationMS != 0 {
 		env.Meta = &Meta{App: e.App, Endpoint: e.Endpoint, DurationMS: e.DurationMS}
 	}
-	_ = w.writeJSON(env)
+	if werr := w.writeJSON(env); werr != nil {
+		// The envelope itself just failed to write, so it is not retried: a
+		// single plain-text line on stderr, naming the io error and the
+		// original code, is the only thing left that can reach the caller.
+		errOut := w.Err
+		if errOut == nil {
+			errOut = os.Stderr
+		}
+		fmt.Fprintf(errOut, "arrctl: cannot write output: %s (original error: %s)\n", werr, e.Code)
+		return ExitInternal
+	}
 	return e.exitOrInternal()
 }
 

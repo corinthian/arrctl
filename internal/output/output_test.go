@@ -310,3 +310,50 @@ func TestRawOnAnInvalidBodyIsAnError(t *testing.T) {
 		t.Errorf("exit = %d, want 4", got)
 	}
 }
+
+// failingWriter always errors, for exercising a write failure without a real
+// broken pipe.
+type failingWriter struct{ err error }
+
+func (f failingWriter) Write([]byte) (int, error) { return 0, f.err }
+
+// A write failure on the error path is never silently discarded: it becomes a
+// single plain-text stderr line and exit 4, the envelope is not retried.
+func TestErrorPathWriteFailureExitsInternal(t *testing.T) {
+	var stderr bytes.Buffer
+	w := New(failingWriter{err: errWriteBoom}, FormatJSON)
+	w.Err = &stderr
+	exit := w.EmitError(&CLIError{
+		Code: CodeArrAuthFailed, Message: "sonarr returned 401 Unauthorized",
+		Exit: ExitArr, App: "sonarr",
+	})
+	if exit != ExitInternal {
+		t.Errorf("exit = %d, want ExitInternal (4)", exit)
+	}
+	got := stderr.String()
+	if !strings.Contains(got, "cannot write output") ||
+		!strings.Contains(got, errWriteBoom.Error()) ||
+		!strings.Contains(got, CodeArrAuthFailed) {
+		t.Errorf("stderr = %q, want a line naming the io error and the original code", got)
+	}
+	if strings.Count(got, "\n") != 1 {
+		t.Errorf("stderr = %q, want exactly one line", got)
+	}
+}
+
+// The success path's existing write-failure handling (PARSE_ERROR, exit 4) is
+// unchanged by the error-path fix.
+func TestSuccessPathWriteFailureUnchanged(t *testing.T) {
+	w := New(failingWriter{err: errWriteBoom}, FormatJSON)
+	err := w.Emit(&Result{Data: json.RawMessage(`{"a":1}`)})
+	cerr, ok := err.(*CLIError)
+	if !ok || cerr.Code != CodeParseError || cerr.exitOrInternal() != ExitInternal {
+		t.Fatalf("err = %+v, want PARSE_ERROR / exit 4", err)
+	}
+}
+
+var errWriteBoom = errBoom{}
+
+type errBoom struct{}
+
+func (errBoom) Error() string { return "disk is full" }
