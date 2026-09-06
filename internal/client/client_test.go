@@ -708,3 +708,36 @@ func TestGenuineRefusalStaysTransportRefused(t *testing.T) {
 		t.Errorf("code = %s exit = %d, want TRANSPORT_REFUSED / 3", cerr.Code, cerr.Exit)
 	}
 }
+
+// A caller-cancelled context is a transport failure like any other cause that
+// falls to the default branch (contract 2.5: Cancelled maps to
+// TRANSPORT_FAILED, not a dedicated code, since no tool installs a signal
+// handler). This is the integration path: the context is threaded all the
+// way from Do into the underlying request and Classify sees
+// context.Canceled, not a bare deadline or connection error.
+func TestCancelledContextIsTransportFailed(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Never respond before the client gives up.
+		<-r.Context().Done()
+	}))
+	defer srv.Close()
+
+	c := newTestClient(t, srv, "radarr")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		time.Sleep(10 * time.Millisecond)
+		cancel()
+	}()
+
+	_, cerr := c.Do(ctx, http.MethodGet, "/movie", Options{})
+	<-done
+	if cerr == nil {
+		t.Fatal("a cancelled request was accepted")
+	}
+	if cerr.Code != output.CodeTransportFailed || cerr.Exit != output.ExitTransport {
+		t.Errorf("code = %s exit = %d, want TRANSPORT_FAILED / 3", cerr.Code, cerr.Exit)
+	}
+}

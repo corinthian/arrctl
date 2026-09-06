@@ -236,6 +236,23 @@ func TestNDJSONPreservesBigIntegers(t *testing.T) {
 	}
 }
 
+// --terse falls back to a compact JSON line when the command sets no
+// human-readable summary. That fallback goes through the same byte-level
+// rawjson.Compact path as --ndjson, but it has its own call site
+// (writeCompactLine via writeTerse) and was untested: an id past 2^53 must
+// survive it unchanged, same as --raw and --ndjson.
+func TestTerseFallbackPreservesBigIntegers(t *testing.T) {
+	var buf bytes.Buffer
+	w := New(&buf, FormatTerse)
+	if err := w.Emit(&Result{Data: json.RawMessage(`{"id":9007199254740993}`)}); err != nil {
+		t.Fatal(err)
+	}
+	got := strings.TrimRight(buf.String(), "\n")
+	if got != `{"id":9007199254740993}` {
+		t.Errorf("got %q, want the integer preserved verbatim", got)
+	}
+}
+
 // A Servarr paged body splits on its `records` array, not on the envelope, so
 // --ndjson reads the same on a paged and an unpaged list.
 func TestNDJSONUnwrapsPagedRecords(t *testing.T) {
