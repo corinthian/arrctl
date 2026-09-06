@@ -26,7 +26,7 @@ import (
 // var, not a const, so build.sh can overwrite it with -ldflags -X at build
 // time; this literal is the fallback when no other source (positional arg,
 // $ARRCTL_BUILD_VERSION, an exact git tag) supplies one.
-var Version = "0.1.0"
+var Version = "0.2.0"
 
 // GlobalFlags holds the persistent flags bound on the root command.
 type GlobalFlags struct {
