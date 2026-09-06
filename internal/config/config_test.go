@@ -514,3 +514,35 @@ func TestTOMLTimeoutIntegerAccepted(t *testing.T) {
 		t.Errorf("timeout = %s, want 30s", c.Timeout)
 	}
 }
+
+// WriteFile, now built on atomicfile.Write, keeps the documented symlink
+// behaviour: the rename replaces the symlink itself, never writing through it
+// to whatever it points at.
+func TestWriteFileReplacesSymlinkLeavingTargetUntouched(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "real.toml")
+	if err := os.WriteFile(target, []byte("do-not-touch"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "config.toml")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+
+	f := File{}
+	f.Radarr.URL = "http://host.example"
+	if err := WriteFile(link, f, true); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	targetBody, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(targetBody) != "do-not-touch" {
+		t.Errorf("the symlink target was written through: %q", targetBody)
+	}
+	if fi, err := os.Lstat(link); err != nil || fi.Mode()&os.ModeSymlink != 0 {
+		t.Error("WriteFile did not replace the symlink itself")
+	}
+}

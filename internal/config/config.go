@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/corinthian/arrctl/internal/atomicfile"
 	"github.com/corinthian/arrctl/internal/configpath"
 	"github.com/corinthian/arrctl/internal/xduration"
 	toml "github.com/pelletier/go-toml/v2"
@@ -416,5 +417,5 @@ func WriteFile(path string, fc File, force bool) error {
 		"# URLs only. API keys live in the macOS Keychain:\n" +
 		"#   security add-generic-password -s radarrctl -a apikey -w <key> -U\n" +
 		"#   security add-generic-password -s sonarrctl -a apikey -w <key> -U\n\n"
-	return AtomicWriteFile(path, append([]byte(header), b...))
+	return atomicfile.Write(path, append([]byte(header), b...))
 }
