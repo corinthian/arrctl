@@ -6,3 +6,7 @@
 
 # macOS
 .DS_Store
+
+# Installed-skill local files (never in the repo)
+.claude/skills/arrctl/PERSONAL.md
+.claude/skills/arrctl/INCIDENTS.md
