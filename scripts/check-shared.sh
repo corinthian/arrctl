@@ -14,7 +14,13 @@ cd "$(dirname "$0")/.."
 root="$(pwd)"
 
 packages=(cause xduration xhttp rawjson atomicfile configpath)
-siblings=(../traktctl ../plexctl)
+# Every repo in the suite except this one. Derived, not listed, so this file
+# is byte-identical in all three checkouts.
+self="$(basename "$root")"
+siblings=()
+for r in arrctl traktctl plexctl; do
+  [ "$r" != "$self" ] && siblings+=("../$r")
+done
 
 drift=0
 compared=0
@@ -28,6 +34,11 @@ for sibling in "${siblings[@]}"; do
   fi
   for pkg in "${packages[@]}"; do
     theirs="$root/$sibling/internal/$pkg"
+    if [ ! -d "$root/internal/$pkg" ]; then
+      echo "skip: this repo has no internal/$pkg"
+      skipped=$((skipped + 1))
+      continue
+    fi
     if [ ! -d "$theirs" ]; then
       echo "skip: $sibling has no internal/$pkg"
       skipped=$((skipped + 1))
