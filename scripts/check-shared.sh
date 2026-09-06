@@ -34,12 +34,21 @@ for sibling in "${siblings[@]}"; do
       continue
     fi
     compared=$((compared + 1))
-    if diff -ru "$root/internal/$pkg" "$theirs"; then
+    # xhttp imports internal/cause by module path, and each repo has its own
+    # module path, so that one line legitimately differs. Normalise it before
+    # diffing; nothing else is normalised.
+    mine_n="$(mktemp -d)"; theirs_n="$(mktemp -d)"
+    cp -R "$root/internal/$pkg/." "$mine_n/"; cp -R "$theirs/." "$theirs_n/"
+    for f in "$mine_n"/*.go "$theirs_n"/*.go; do
+      [ -f "$f" ] && sed -i '' 's#github.com/corinthian/[a-z]*/internal/#MODULE/internal/#g' "$f"
+    done
+    if diff -ru "$mine_n" "$theirs_n"; then
       echo "ok: internal/$pkg matches $sibling"
     else
       echo "DRIFT: internal/$pkg differs from $sibling/internal/$pkg"
       drift=1
     fi
+    rm -rf "$mine_n" "$theirs_n"
   done
 done
 
