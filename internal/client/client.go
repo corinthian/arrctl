@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/corinthian/arrctl/internal/output"
+	"github.com/corinthian/arrctl/internal/xhttp"
 )
 
 // APIPrefix is the v3 API path prefix. `/ping` and `/api` sit outside it.
@@ -81,7 +82,11 @@ func New(c Config) *Client {
 		p = KeyInHeader
 	}
 	return &Client{
-		http:      &http.Client{Timeout: c.Timeout, Transport: tr, CheckRedirect: rejectCrossOriginRedirect},
+		http: xhttp.NewClient(xhttp.Options{
+			Timeout:   c.Timeout,
+			Redirects: xhttp.RedirectPolicy{SameOrigin: true, MaxHops: 10},
+			Transport: tr,
+		}),
 		app:       c.App,
 		baseURL:   strings.TrimRight(c.BaseURL, "/"),
 		apiKey:    c.APIKey,
@@ -89,20 +94,6 @@ func New(c Config) *Client {
 		userAgent: "arrctl/" + c.Version,
 		keyHint:   c.KeyHint,
 	}
-}
-
-// rejectCrossOriginRedirect refuses to follow a redirect whose scheme or host
-// differs from the first request's, so a misconfigured instance cannot retarget
-// the API key to another origin.
-func rejectCrossOriginRedirect(req *http.Request, via []*http.Request) error {
-	if len(via) == 0 {
-		return nil
-	}
-	first := via[0].URL
-	if req.URL.Scheme != first.Scheme || req.URL.Host != first.Host {
-		return fmt.Errorf("refusing cross-origin redirect: %s -> %s", first.Host, req.URL.Host)
-	}
-	return nil
 }
 
 // Options carries per-call request shaping.
@@ -395,7 +386,7 @@ func (c *Client) transportError(err error, path string, d time.Duration) *output
 		e.Code = output.CodeTransportRefused
 		e.Message = "connection refused by " + c.app
 	default:
-		e.Code = output.CodeTransportRefused
+		e.Code = output.CodeTransportFailed
 		e.Message = "transport error talking to " + c.app + ": " + scrub(err)
 	}
 	return e

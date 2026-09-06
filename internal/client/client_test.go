@@ -359,6 +359,31 @@ func TestCrossOriginRedirectRefused(t *testing.T) {
 	if cerr == nil {
 		t.Fatal("a cross-origin redirect was followed")
 	}
+	if cerr.Code != output.CodeTransportFailed || cerr.Exit != output.ExitTransport {
+		t.Errorf("code = %s exit = %d, want TRANSPORT_FAILED / 3", cerr.Code, cerr.Exit)
+	}
+}
+
+// An over-cap same-origin redirect chain is refused and named as a cap, not
+// followed to the HTTP client's own timeout.
+func TestRedirectOverHopCapIsTransportFailed(t *testing.T) {
+	var srv *httptest.Server
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, srv.URL+"/next", http.StatusFound)
+	}))
+	defer srv.Close()
+
+	c := newTestClient(t, srv, "radarr")
+	_, cerr := c.Do(context.Background(), http.MethodGet, "/movie", Options{})
+	if cerr == nil {
+		t.Fatal("an over-cap same-origin redirect chain was followed")
+	}
+	if cerr.Code != output.CodeTransportFailed || cerr.Exit != output.ExitTransport {
+		t.Errorf("code = %s exit = %d, want TRANSPORT_FAILED / 3", cerr.Code, cerr.Exit)
+	}
+	if !strings.Contains(cerr.Message, "10 hops") {
+		t.Errorf("message = %q, want it to name the cap", cerr.Message)
+	}
 }
 
 // Not every Servarr paged body carries totalRecords. Terminating on
