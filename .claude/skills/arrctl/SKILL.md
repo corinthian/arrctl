@@ -46,6 +46,13 @@ hint. Show that line; it is the fix.
 A `DECODE_ERROR` means the instance sent something that is not the JSON it
 promised, or a response over the size bound — report it, do not retry.
 
+The full `error.code` set, by exit: 1 `BAD_REQUEST` `BAD_CONFIG`
+`CONFIRM_REQUIRED` `PAGINATION_RUNAWAY`; 2 `ARR_AUTH_FAILED` `ARR_VALIDATION`
+(the app rejected the payload — `message` says which field) `ARR_NOT_FOUND`
+`ARR_ERROR`; 3 `TRANSPORT_DNS` `TRANSPORT_TLS` `TRANSPORT_TIMEOUT`
+`TRANSPORT_REFUSED` `TRANSPORT_FAILED`; 4 `PARSE_ERROR` `DECODE_ERROR`.
+Route on the code, not the message text.
+
 Add `--terse` when you only need a one-liner. Use `jq` on the JSON for
 anything you have to reason about.
 
@@ -91,9 +98,14 @@ the user a search succeeded on the strength of the poll returning.
 **Choose a release yourself:**
 ```sh
 arrctl radarr release search --movie-id N | jq '[.data[] | {guid,title,size,quality:.quality.quality.name,indexer,age,seeders}] | sort_by(.size)'
-arrctl radarr release grab --payload '{"guid":"...","indexerId":N}'
+arrctl radarr release search --movie-id N > /tmp/rel.json
+jq '[.data[] | select(.guid == "GUID")][0]' /tmp/rel.json > /tmp/grab.json
+arrctl radarr release grab --payload-file /tmp/grab.json --confirm
 ```
-State the size in GB before the grab. Wait for the user's yes above 1 GB.
+`release grab` needs the WHOLE release object echoed back; a bare
+`{guid, indexerId}` is an `ARR_NOT_FOUND`. Take it from a fresh search — results
+are cached per search and a guid from an old one 404s on its own. State the
+size in GB before the grab. Wait for the user's yes above 1 GB.
 
 **Add something new:** `movie lookup --term` / `series lookup --term` finds it
 in the metadata provider; `movie add` / `series add` puts it in the library and
@@ -107,6 +119,12 @@ as JSON. Read those instead of guessing.
 
 ## Traps
 
+- Adding a film or series as monitored with no file is a grab on the app's
+  own RSS timer, whatever `searchForMovie`/`searchForMissingEpisodes` says.
+  Those flags only suppress the immediate search. To add and let the user
+  choose the release: add with `"monitored": false`, show `release search`
+  candidates, then `movie update` / `series update` to monitored after the
+  pick.
 - A 4K request is a profile change, not a search flag. Radarr's automatic
   search runs under the film's current quality profile, so switching the film
   to a 2160p-capable profile comes first — and that is a `movie update`, which
