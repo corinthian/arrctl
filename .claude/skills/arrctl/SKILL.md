@@ -129,6 +129,14 @@ as JSON. Read those instead of guessing.
   search runs under the film's current quality profile, so switching the film
   to a 2160p-capable profile comes first — and that is a `movie update`, which
   the user should authorise.
+- `release grab` does not refuse a release the app marked `rejected: true` —
+  it grabs it without comment. Before grabbing one, name its `rejections` to
+  the user ("Radarr flagged it: below your HD profile; expected French audio")
+  so the override is a decision, not an accident.
+- An "Original Language (X) is wanted, but found Y" rejection reads the
+  metadata provider's original language, which is often wrong for older
+  European films (Donna è bello, an Italian film, is listed as French on
+  TMDB). Treat it as probably bad metadata, not a bad release, and say so.
 - The scanner ignores video files whose names carry no year. `manualimport
   list --folder ...` then `manualimport submit` is the tool for those, and
   submit is gated.
