@@ -1,19 +1,19 @@
 #!/usr/bin/env bash
-# Six packages under internal/ are shared verbatim with traktctl and plexctl.
+# Seven packages under internal/ are shared verbatim with traktctl and plexctl.
 # They are copied, not vendored, because a module boundary is the thing this
 # refactor is deliberately not paying for yet. A copy drifts silently, so this
 # script says so out loud.
 #
 # A sibling that does not have a package is skipped, not failed: the copies
-# land repository by repository, and two of the six are never going everywhere
-# (rawjson is arrctl and traktctl only; configpath is arrctl and traktctl
-# only). A skip therefore means "not compared", never "compared and matched".
+# land repository by repository, and three of the seven are never going
+# everywhere (rawjson, configpath and keychain are arrctl and traktctl only).
+# A skip therefore means "not compared", never "compared and matched".
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
 root="$(pwd)"
 
-packages=(cause xduration xhttp rawjson atomicfile configpath)
+packages=(cause xduration xhttp rawjson atomicfile configpath keychain)
 # Every repo in the suite except this one. Derived, not listed, so this file
 # is byte-identical in all three checkouts.
 self="$(basename "$root")"

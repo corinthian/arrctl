@@ -123,7 +123,8 @@ func (a *App) build(target config.App) *output.CLIError {
 		Timeout:   cfg.Timeout,
 		Version:   Version,
 		Placement: client.KeyPlacement(a.Flags.APIKeyIn),
-		KeyHint:   target.KeyHint(),
+		KeyHint:   target.KeyHint(cfg.TokenStore),
+		KeyNote:   cfg.KeychainErr,
 	})
 	return nil
 }

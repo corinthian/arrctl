@@ -1,12 +1,13 @@
 package config
 
 import (
-	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/corinthian/arrctl/internal/keychain"
 )
 
 // stubKeychain replaces the Keychain reader for the duration of a test. No test
@@ -18,7 +19,7 @@ func stubKeychain(t *testing.T, vals map[string]string) {
 		if v, ok := vals[service+"/"+account]; ok {
 			return v, nil
 		}
-		return "", errors.New("not found")
+		return "", keychain.ErrNotFound
 	}
 	t.Cleanup(func() { keyLookup = orig })
 }

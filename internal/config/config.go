@@ -16,9 +16,9 @@ import (
 
 	"github.com/corinthian/arrctl/internal/atomicfile"
 	"github.com/corinthian/arrctl/internal/configpath"
+	"github.com/corinthian/arrctl/internal/keychain"
 	"github.com/corinthian/arrctl/internal/xduration"
 	toml "github.com/pelletier/go-toml/v2"
-	"github.com/zalando/go-keyring"
 )
 
 // App names the target instance. It is the first positional argument.
@@ -54,6 +54,40 @@ type AppConfig struct {
 	// KeySource records where the API key came from, for `config show`/`path`.
 	// Never carries the key itself.
 	KeySource string
+
+	// TokenStore is the resolved key store mode: TokenStoreKeychain or
+	// TokenStoreFile. In file mode the Keychain is never consulted.
+	TokenStore string
+
+	// KeychainErr is why the Keychain lookup failed, "" when it was not
+	// consulted, found the key, or found nothing (not-found stays silent).
+	// It never carries a key value.
+	KeychainErr string
+}
+
+// Key store modes. The name matches traktctl's token_store on purpose.
+const (
+	TokenStoreKeychain = "keychain"
+	TokenStoreFile     = "file"
+)
+
+// ResolveTokenStore applies $ARRCTL_TOKEN_STORE over [defaults] token_store,
+// defaults to keychain, and rejects anything else.
+func ResolveTokenStore(l *Loaded) (string, error) {
+	v, src := "", "config token_store"
+	if l != nil {
+		v = l.File.Defaults.TokenStore
+	}
+	if e := os.Getenv("ARRCTL_TOKEN_STORE"); e != "" {
+		v, src = e, "$ARRCTL_TOKEN_STORE"
+	}
+	switch v {
+	case "":
+		return TokenStoreKeychain, nil
+	case TokenStoreKeychain, TokenStoreFile:
+		return v, nil
+	}
+	return "", fmt.Errorf("%s %q is invalid; token_store must be %q or %q", src, v, TokenStoreKeychain, TokenStoreFile)
 }
 
 // fileApp is the on-disk shape of a `[radarr]` / `[sonarr]` table.
@@ -67,7 +101,8 @@ type fileApp struct {
 // seconds, per xduration's grammar; nil means the key is absent, which is
 // distinct from an (invalid) explicit zero.
 type fileDefaults struct {
-	Timeout *int `toml:"timeout,omitempty"`
+	Timeout    *int   `toml:"timeout,omitempty"`
+	TokenStore string `toml:"token_store,omitempty"`
 }
 
 // File is the whole config.toml.
@@ -153,9 +188,10 @@ func LoadFile(explicit string, tolerate bool) (*Loaded, error) {
 	return l, nil
 }
 
-// keyLookup is the Keychain reader, swappable in tests.
+// keyLookup is the Keychain reader, swappable in tests. keychain.Get is
+// bounded, so a secret store that never answers cannot hang a command.
 var keyLookup = func(service, account string) (string, error) {
-	return keyring.Get(service, account)
+	return keychain.Get(service, account)
 }
 
 // Resolve builds one app's config from flags > env > file > Keychain. The
@@ -167,6 +203,11 @@ func Resolve(a App, f Flags, l *Loaded) (*AppConfig, error) {
 	}
 	fa := l.File.app(a)
 	c := &AppConfig{App: a}
+	mode, err := ResolveTokenStore(l)
+	if err != nil {
+		return nil, err
+	}
+	c.TokenStore = mode
 
 	// 3. file
 	c.URL = fa.URL
@@ -201,12 +242,15 @@ func Resolve(a App, f Flags, l *Loaded) (*AppConfig, error) {
 		c.Insecure = f.Insecure
 	}
 
-	// 4. Keychain, key only, lowest precedence.
-	if c.APIKey == "" {
+	// 4. Keychain, key only, lowest precedence, and never in file mode.
+	if c.APIKey == "" && mode != TokenStoreFile {
 		k, err := keyLookup(a.KeychainService(), KeychainAccount)
-		if err == nil && k != "" {
+		switch {
+		case err == nil && k != "":
 			c.APIKey = k
 			c.KeySource = "keychain:" + a.KeychainService() + "/" + KeychainAccount
+		case err != nil && !errors.Is(err, keychain.ErrNotFound):
+			c.KeychainErr = describeKeychainErr(err)
 		}
 	}
 
@@ -227,9 +271,23 @@ func Resolve(a App, f Flags, l *Loaded) (*AppConfig, error) {
 	return c, nil
 }
 
-// KeyHint is the recovery line for a missing or rejected key. It never contains
-// a key value.
-func (a App) KeyHint() string {
+// describeKeychainErr renders a Keychain failure for error text. A timeout
+// already reads "keychain unavailable: timed out after 5s"; anything else gets
+// the same lead so the reader knows which store failed.
+func describeKeychainErr(err error) string {
+	if errors.Is(err, keychain.ErrUnavailable) {
+		return err.Error()
+	}
+	return "keychain error: " + err.Error()
+}
+
+// KeyHint is the recovery line for a missing or rejected key under the given
+// token store mode. It never contains a key value.
+func (a App) KeyHint(mode string) string {
+	if mode == TokenStoreFile {
+		return "set ARRCTL_" + strings.ToUpper(string(a)) + "_APIKEY, or apikey under [" +
+			string(a) + "] in " + DisplayConfigPath()
+	}
 	return "security add-generic-password -s " + a.KeychainService() +
 		" -a " + KeychainAccount + " -w <key> -U"
 }
