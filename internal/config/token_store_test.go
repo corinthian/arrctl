@@ -191,6 +191,7 @@ func TestResolveNoURLSkipsKeychain(t *testing.T) {
 	t.Setenv("ARRCTL_TOKEN_STORE", "")
 	t.Setenv("ARRCTL_RADARR_APIKEY", "")
 	t.Setenv("ARRCTL_RADARR_URL", "")
+	t.Setenv("ARRCTL_TIMEOUT", "")
 	calls := 0
 	orig := keyLookup
 	keyLookup = func(string, string) (string, error) {
