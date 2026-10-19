@@ -2,6 +2,7 @@ package commands
 
 import (
 	"strconv"
+	"strings"
 
 	"github.com/corinthian/arrctl/internal/config"
 	"github.com/corinthian/arrctl/internal/output"
@@ -62,7 +63,7 @@ func (a *App) configInit() *cobra.Command {
 				"written_to": path,
 				"radarr":     map[string]interface{}{"url": radarrURL, "insecure": radarrInsecure},
 				"sonarr":     map[string]interface{}{"url": sonarrURL, "insecure": sonarrInsecure},
-				"apikeys":    "not written; store them with: security add-generic-password -s radarrctl -a apikey -w <key> -U",
+				"apikeys":    "not written; " + initKeyAdvice(a.Loaded),
 			}, "Wrote "+path)
 		},
 	}
@@ -86,6 +87,7 @@ func (a *App) configShow() *cobra.Command {
 			out := map[string]interface{}{
 				"config_in_use": config.ResolvedConfigPath(a.Flags.ConfigPath).Path,
 			}
+			reportTokenStore(out, a.Loaded)
 			for _, app := range config.Apps {
 				row := map[string]interface{}{}
 				cfg, err := config.Resolve(app, config.Flags{
@@ -103,6 +105,9 @@ func (a *App) configShow() *cobra.Command {
 				row["timeout"] = cfg.Timeout.String()
 				row["apikey"] = redact(cfg.APIKey)
 				row["apikey_source"] = cfg.KeySource
+				if cfg.KeychainErr != "" {
+					row["keychain_error"] = cfg.KeychainErr
+				}
 				out[string(app)] = row
 			}
 			return a.emitLocal(out, "")
@@ -120,24 +125,67 @@ func (a *App) configPath() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			resolved := config.ResolvedConfigPath(a.Flags.ConfigPath)
 			def, _ := config.DefaultConfigPath()
+			mode, _ := config.ResolveTokenStore(a.Loaded)
 			keys := map[string]interface{}{}
 			for _, app := range config.Apps {
-				keys[string(app)] = map[string]string{
+				// The Keychain failure, if any, as the key would actually be
+				// resolved; a resolve that fails for another reason (no url)
+				// has nothing to add here.
+				var kerr string
+				if cfg, err := config.Resolve(app, config.Flags{
+					URL: a.Flags.URL, APIKey: a.Flags.APIKey,
+					Insecure: a.Flags.Insecure, InsecureSet: a.insecureSet,
+					Timeout: a.Flags.Timeout, TimeoutSet: a.timeoutSet, ConfigPath: a.Flags.ConfigPath,
+				}, a.Loaded); err == nil {
+					kerr = cfg.KeychainErr
+				}
+				if mode == config.TokenStoreFile {
+					keys[string(app)] = map[string]string{
+						"store": "ARRCTL_" + strings.ToUpper(string(app)) + "_APIKEY or [" + string(app) + "] apikey in config.toml",
+					}
+					continue
+				}
+				entry := map[string]string{
 					"service": app.KeychainService(),
 					"account": config.KeychainAccount,
 					"store":   "macOS login Keychain",
 				}
+				if kerr != "" {
+					entry["keychain_error"] = kerr
+				}
+				keys[string(app)] = entry
 			}
-			return a.emitLocal(map[string]interface{}{
+			out := map[string]interface{}{
 				"config_in_use":   resolved.Path,
 				"config_default":  def,
 				"config_found":    resolved.Found(),
 				"config_explicit": resolved.Explicit,
 				"config_error":    errText(resolved.Err),
 				"apikeys":         keys,
-			}, "")
+			}
+			reportTokenStore(out, a.Loaded)
+			return a.emitLocal(out, "")
 		},
 	}
+}
+
+// reportTokenStore adds the key store mode to a diagnostic payload, or the
+// reason it is invalid.
+func reportTokenStore(out map[string]interface{}, l *config.Loaded) {
+	mode, err := config.ResolveTokenStore(l)
+	if err != nil {
+		out["token_store_error"] = err.Error()
+		return
+	}
+	out["token_store"] = mode
+}
+
+// initKeyAdvice says where API keys go under the current key store mode.
+func initKeyAdvice(l *config.Loaded) string {
+	if mode, _ := config.ResolveTokenStore(l); mode == config.TokenStoreFile {
+		return "token_store is file: set ARRCTL_RADARR_APIKEY / ARRCTL_SONARR_APIKEY, or add apikey to config.toml by hand"
+	}
+	return "store them with: security add-generic-password -s radarrctl -a apikey -w <key> -U"
 }
 
 // errText renders a resolution error for the payload, "" when there is none.

@@ -60,6 +60,7 @@ type Client struct {
 	placement KeyPlacement
 	userAgent string
 	keyHint   string
+	keyNote   string
 }
 
 // Config configures a Client.
@@ -72,6 +73,10 @@ type Config struct {
 	Version   string // arrctl version, for User-Agent
 	Placement KeyPlacement
 	KeyHint   string // recovery line shown on an auth failure; never a key value
+	// KeyNote is why the Keychain could not supply a key ("keychain
+	// unavailable: timed out after 5s"); appended to the missing-key and
+	// rejected-key messages. Never a key value.
+	KeyNote string
 }
 
 // New builds a Client.
@@ -99,6 +104,7 @@ func New(c Config) *Client {
 		placement: p,
 		userAgent: "arrctl/" + c.Version,
 		keyHint:   c.KeyHint,
+		keyNote:   c.KeyNote,
 	}
 }
 
@@ -155,7 +161,7 @@ func (c *Client) Do(ctx context.Context, method, path string, opts Options) (*Re
 	if !opts.NoKey && c.apiKey == "" {
 		return nil, &output.CLIError{
 			Code:     output.CodeBadConfig,
-			Message:  "no api key for " + c.app,
+			Message:  c.withKeyNote("no api key for " + c.app),
 			Hint:     c.keyHint,
 			Exit:     output.ExitForCode(output.CodeBadConfig),
 			App:      c.app,
@@ -449,6 +455,14 @@ func scrub(err error) string {
 	return err.Error()
 }
 
+// withKeyNote appends the Keychain failure, if any, to a key error message.
+func (c *Client) withKeyNote(msg string) string {
+	if c.keyNote == "" {
+		return msg
+	}
+	return msg + " (" + c.keyNote + ")"
+}
+
 // mapHTTPError converts a non-2xx response into a typed CLIError.
 func (c *Client) mapHTTPError(resp *http.Response, body []byte, path string, dur int64) *output.CLIError {
 	e := &output.CLIError{
@@ -458,7 +472,7 @@ func (c *Client) mapHTTPError(resp *http.Response, body []byte, path string, dur
 	switch {
 	case resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden:
 		e.Code = output.CodeArrAuthFailed
-		e.Message = fmt.Sprintf("%s returned %d %s", c.app, resp.StatusCode, http.StatusText(resp.StatusCode))
+		e.Message = c.withKeyNote(fmt.Sprintf("%s returned %d %s", c.app, resp.StatusCode, http.StatusText(resp.StatusCode)))
 		e.Hint = c.keyHint
 	case resp.StatusCode == http.StatusNotFound:
 		e.Code = output.CodeArrNotFound
