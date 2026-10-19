@@ -187,6 +187,25 @@ func TestResolveNotFoundIsSilent(t *testing.T) {
 	}
 }
 
+func TestResolveNoURLSkipsKeychain(t *testing.T) {
+	t.Setenv("ARRCTL_TOKEN_STORE", "")
+	t.Setenv("ARRCTL_RADARR_APIKEY", "")
+	t.Setenv("ARRCTL_RADARR_URL", "")
+	calls := 0
+	orig := keyLookup
+	keyLookup = func(string, string) (string, error) {
+		calls++
+		return "", fmt.Errorf("%w: timed out after 5s", keychain.ErrUnavailable)
+	}
+	t.Cleanup(func() { keyLookup = orig })
+	if _, err := Resolve(Radarr, Flags{}, &Loaded{}); err == nil || !strings.Contains(err.Error(), "no url") {
+		t.Fatalf("Resolve err = %v, want a no-url error", err)
+	}
+	if calls != 0 {
+		t.Errorf("keyLookup called %d times, want 0 when the app has no url", calls)
+	}
+}
+
 func TestResolveOtherKeychainErrorIsLabelled(t *testing.T) {
 	t.Setenv("ARRCTL_TOKEN_STORE", "")
 	t.Setenv("ARRCTL_RADARR_APIKEY", "")

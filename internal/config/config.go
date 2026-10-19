@@ -242,18 +242,6 @@ func Resolve(a App, f Flags, l *Loaded) (*AppConfig, error) {
 		c.Insecure = f.Insecure
 	}
 
-	// 4. Keychain, key only, lowest precedence, and never in file mode.
-	if c.APIKey == "" && mode != TokenStoreFile {
-		k, err := keyLookup(a.KeychainService(), KeychainAccount)
-		switch {
-		case err == nil && k != "":
-			c.APIKey = k
-			c.KeySource = "keychain:" + a.KeychainService() + "/" + KeychainAccount
-		case err != nil && !errors.Is(err, keychain.ErrNotFound):
-			c.KeychainErr = describeKeychainErr(err)
-		}
-	}
-
 	d, err := resolveTimeout(f.TimeoutSet, f.Timeout, l.Source, l.File.Defaults.Timeout)
 	if err != nil {
 		return nil, err
@@ -268,6 +256,20 @@ func Resolve(a App, f Flags, l *Loaded) (*AppConfig, error) {
 		return nil, err
 	}
 	c.URL = strings.TrimRight(c.URL, "/")
+
+	// 4. Keychain, key only, lowest precedence, and never in file mode. Last,
+	// so an app that cannot run anyway never pays for a bounded probe whose
+	// error would be discarded with it.
+	if c.APIKey == "" && mode != TokenStoreFile {
+		k, err := keyLookup(a.KeychainService(), KeychainAccount)
+		switch {
+		case err == nil && k != "":
+			c.APIKey = k
+			c.KeySource = "keychain:" + a.KeychainService() + "/" + KeychainAccount
+		case err != nil && !errors.Is(err, keychain.ErrNotFound):
+			c.KeychainErr = describeKeychainErr(err)
+		}
+	}
 	return c, nil
 }
 
