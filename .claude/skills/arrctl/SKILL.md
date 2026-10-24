@@ -167,4 +167,4 @@ before anything is grabbed.
 
 ## Local files
 
-This repo copy is canonical for everything above: generic edits land here and are copied to `~/.claude/skills/arrctl/SKILL.md`. Three files in the installed skill directory are local-only and never flow back: `PERSONAL.md` (machine-specific preferences), `LESSONS.md` (the self-improvement log). Read `PERSONAL.md` first if it exists; its rules override defaults here. If it is missing, run with the defaults.
+This repo copy is canonical for everything above: generic edits land here and are copied to `~/.claude/skills/arrctl/SKILL.md`. Two files in the installed skill directory are local-only and never flow back: `PERSONAL.md` (machine-specific preferences) and `LESSONS.md` (the self-improvement log). Read `PERSONAL.md` first if it exists; its rules override defaults here. If it is missing, run with the defaults.
