@@ -90,6 +90,30 @@ func ResolveTokenStore(l *Loaded) (string, error) {
 	return "", fmt.Errorf("%s %q is invalid; token_store must be %q or %q", src, v, TokenStoreKeychain, TokenStoreFile)
 }
 
+// Key store statuses, as the diagnostics report them.
+const (
+	TokenStoreStatusValid     = "valid"
+	TokenStoreStatusMisplaced = "misplaced"
+	TokenStoreStatusInvalid   = "invalid"
+)
+
+func misplacedTokenStoreHint(v string) string {
+	return fmt.Sprintf("token_store = %q at the top level is ignored; move it under [defaults]", v)
+}
+
+// TokenStoreStatus says whether the resolved mode can be trusted. An invalid
+// value outranks a misplaced key: it is the one that stops every command. The
+// hint is set for misplaced only; the invalid text is ResolveTokenStore's error.
+func TokenStoreStatus(l *Loaded) (status, hint string) {
+	if _, err := ResolveTokenStore(l); err != nil {
+		return TokenStoreStatusInvalid, ""
+	}
+	if l != nil && l.File.TopTokenStore != "" {
+		return TokenStoreStatusMisplaced, misplacedTokenStoreHint(l.File.TopTokenStore)
+	}
+	return TokenStoreStatusValid, ""
+}
+
 // fileApp is the on-disk shape of a `[radarr]` / `[sonarr]` table.
 type fileApp struct {
 	URL      string `toml:"url,omitempty"`
@@ -107,6 +131,10 @@ type fileDefaults struct {
 
 // File is the whole config.toml.
 type File struct {
+	// TopTokenStore catches a token_store written above the tables. It is
+	// never honoured; LoadFile turns it into a warning naming [defaults].
+	TopTokenStore string `toml:"token_store,omitempty"`
+
 	Radarr   fileApp      `toml:"radarr"`
 	Sonarr   fileApp      `toml:"sonarr"`
 	Defaults fileDefaults `toml:"defaults"`
@@ -135,6 +163,9 @@ type Flags struct {
 type Loaded struct {
 	File   File
 	Source string
+	// Warnings are problems in a file that still parsed: settings that are
+	// present but have no effect. The caller prints them to stderr.
+	Warnings []string
 }
 
 // LoadFile reads config.toml. A missing DEFAULT file is not an error — every
@@ -185,6 +216,9 @@ func LoadFile(explicit string, tolerate bool) (*Loaded, error) {
 		return nil, fmt.Errorf("parsing %s: %w", r.Path, err)
 	}
 	l.Source = r.Path
+	if l.File.TopTokenStore != "" {
+		l.Warnings = append(l.Warnings, r.Path+": "+misplacedTokenStoreHint(l.File.TopTokenStore))
+	}
 	return l, nil
 }
 
@@ -459,6 +493,7 @@ func DisplayConfigPath() string {
 // overwrite an existing file unless force is set. An apikey field is never
 // written: `config init` holds URLs only, keys live in the Keychain.
 func WriteFile(path string, fc File, force bool) error {
+	fc.TopTokenStore = ""
 	fc.Radarr.APIKey = ""
 	fc.Sonarr.APIKey = ""
 	if !force {
