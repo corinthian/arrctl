@@ -222,3 +222,29 @@ func TestResolveOtherKeychainErrorIsLabelled(t *testing.T) {
 		t.Errorf("KeychainErr = %q", c.KeychainErr)
 	}
 }
+
+func TestTopLevelTokenStoreWarnsAndIsIgnored(t *testing.T) {
+	t.Setenv("ARRCTL_TOKEN_STORE", "")
+	path := writeConfig(t, "token_store = \"file\"\n"+sample)
+	l, err := LoadFile(path, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(l.Warnings) != 1 || !strings.Contains(l.Warnings[0], "[defaults]") ||
+		!strings.Contains(l.Warnings[0], path) {
+		t.Fatalf("warnings = %q, want one naming [defaults] and the file", l.Warnings)
+	}
+	if mode, err := ResolveTokenStore(l); err != nil || mode != TokenStoreKeychain {
+		t.Fatalf("mode = %q, err = %v; a top-level token_store must not take effect", mode, err)
+	}
+}
+
+func TestDefaultsTokenStoreDoesNotWarn(t *testing.T) {
+	l, err := LoadFile(writeConfig(t, sample+"token_store = \"file\"\n"), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(l.Warnings) != 0 {
+		t.Fatalf("warnings = %q, want none", l.Warnings)
+	}
+}

@@ -53,6 +53,37 @@ security add-generic-password -s radarrctl -a apikey -w <key> -U
 security add-generic-password -s sonarrctl -a apikey -w <key> -U
 ```
 
+### Key store
+
+`token_store` picks where API keys are read from. It has two values:
+
+- `keychain` (the default): the macOS Keychain, as above.
+- `file`: the Keychain is never consulted. Keys come from
+  `ARRCTL_RADARR_APIKEY` / `ARRCTL_SONARR_APIKEY`, or from an `apikey` line
+  added by hand under `[radarr]` / `[sonarr]`.
+
+Set it under `[defaults]` in `config.toml`, or with `$ARRCTL_TOKEN_STORE`,
+which wins over the file:
+
+```toml
+[defaults]
+token_store = "file"
+```
+
+It is read from `[defaults]` only. A `token_store` line above the tables, at
+the top level of the file, is ignored: every command prints a warning to
+stderr naming `[defaults]`, and carries on in the mode actually in effect.
+
+`config path` and `config show` report the outcome as `token_store_status`:
+
+| Status | Meaning |
+|---|---|
+| `valid` | `token_store` is the mode in effect: what was set, or the default. |
+| `misplaced` | A top-level `token_store` was found and ignored. `token_store` is the mode in effect, and `token_store_hint` says how to fix the file. |
+| `invalid` | The value is not `keychain` or `file`. `token_store` is absent and `token_store_error` carries the reason. |
+
+A file with both faults reports `invalid`.
+
 ```sh
 arrctl config init --radarr-url http://RADARR-HOST --sonarr-url https://SONARR-HOST
 arrctl config show    # resolved settings, key redacted

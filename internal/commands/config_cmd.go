@@ -169,9 +169,15 @@ func (a *App) configPath() *cobra.Command {
 	}
 }
 
-// reportTokenStore adds the key store mode to a diagnostic payload, or the
-// reason it is invalid.
+// reportTokenStore adds the key store mode and its status to a diagnostic
+// payload: the mode in effect, or the reason it is invalid, plus the fix when
+// a top-level token_store was ignored.
 func reportTokenStore(out map[string]interface{}, l *config.Loaded) {
+	status, hint := config.TokenStoreStatus(l)
+	out["token_store_status"] = status
+	if hint != "" {
+		out["token_store_hint"] = hint
+	}
 	mode, err := config.ResolveTokenStore(l)
 	if err != nil {
 		out["token_store_error"] = err.Error()

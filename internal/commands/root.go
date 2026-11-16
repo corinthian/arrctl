@@ -2,6 +2,7 @@ package commands
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"strings"
 
@@ -55,6 +56,9 @@ func NewRoot() (*cobra.Command, *App) {
 				return output.NewError(output.CodeBadConfig, err.Error())
 			}
 			app.Loaded = loaded
+			for _, w := range loaded.Warnings {
+				fmt.Fprintln(cmd.ErrOrStderr(), "warning: "+w)
+			}
 
 			// Record the target app; the client itself is built lazily on the
 			// first request, so a usage error is never masked by a config one.
